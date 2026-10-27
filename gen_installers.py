@@ -55,7 +55,7 @@ if [ -f "rust-toolchain.toml" ]; then
     rm -f rust-toolchain.toml
 fi
 
-# --- STAGE 3: SIDECAR BINARIES (WITH VERSION CHECK) ---
+# --- STAGE 3: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
 echo "🎵 Fetching sidecar binaries..."
 mkdir -p src-tauri/binaries
 
@@ -64,7 +64,8 @@ YTDLP_PATH="src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu"
 if [ -s "$YTDLP_PATH" ]; then
     echo "   🔍 Checking yt-dlp version..."
     LOCAL_YTDLP=$("$YTDLP_PATH" --version 2>/dev/null || echo "0")
-    LATEST_YTDLP=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    # Uses HEAD request to get the redirect URL, bypassing API rate limits
+    LATEST_YTDLP=$(curl -sI "https://github.com/yt-dlp/yt-dlp/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
     
     if [ -z "$LATEST_YTDLP" ]; then
         echo "   ⚠️ Could not check for updates (offline?). Using existing version."
@@ -92,27 +93,27 @@ fi
 FFMPEG_PATH="src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu"
 FFPROBE_PATH="src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu"
 ARCHIVE="ffmpeg-linux.tar.xz"
+NEED_DOWNLOAD=0
 
 if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
     echo "   🔍 Checking FFmpeg version..."
-    LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
-    LATEST_FFMPEG_DATE=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" 2>/dev/null | grep -o '"name": "Latest Auto-Build ([^)]*)"' | sed -E 's/.*\(([^)]*)\).*/\1/')
+    # Uses HEAD request to get the BtbN tag (e.g., autobuild-2026-10-26-14-05)
+    LATEST_FFMPEG_TAG=$(curl -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
+    LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d" 2>/dev/null)
     
-    if [ -z "$LATEST_FFMPEG_DATE" ] || [ "$LOCAL_FFMPEG_DATE" = "unknown" ]; then
+    if [ -z "$LATEST_FFMPEG_TAG" ] || [ -z "$LOCAL_FFMPEG_DATE" ]; then
         echo "   ⚠️ Could not check for updates. Using existing version."
-    elif [[ "$LATEST_FFMPEG_DATE" > "$LOCAL_FFMPEG_DATE" ]]; then
-        echo "   ⚠️  FFmpeg is out of date (local: $LOCAL_FFMPEG_DATE, latest: $LATEST_FFMPEG_DATE)."
+    elif [[ "$LATEST_FFMPEG_TAG" > *"$LOCAL_FFMPEG_DATE"* ]]; then
+        echo "   ⚠️  FFmpeg is out of date (local build: $LOCAL_FFMPEG_DATE, latest build: $LATEST_FFMPEG_TAG)."
         read -p "   Do you want to update FFmpeg & FFprobe? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             NEED_DOWNLOAD=1
         else
             echo "   ⏭️ Skipping update."
-            NEED_DOWNLOAD=0
         fi
     else
-        echo "   ✅ FFmpeg is up to date ($LOCAL_FFMPEG_DATE)."
-        NEED_DOWNLOAD=0
+        echo "   ✅ FFmpeg is up to date."
     fi
 else
     echo "   ⬇️ Downloading FFmpeg (not found)..."
@@ -120,7 +121,6 @@ else
 fi
 
 if [ "$NEED_DOWNLOAD" -eq 1 ]; then
-    # Check if archive exists and is a valid tar.xz
     if [ -f "$ARCHIVE" ]; then
         if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
             echo "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..."
@@ -172,32 +172,16 @@ Write-Host "🔍 Checking prerequisites..." -ForegroundColor Cyan
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Write-Host "❌ Rust not installed."; exit 1 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host "❌ Node.js not installed."; exit 1 }
 
-# --- STAGE 1: REPO LOCATION (FOOLPROOF) ---
+# --- STAGE 1: REPO LOCATION ---
 $RepoName = "spotify_downloader"
 $InsideRepo = $false
+if ((Test-Path "src-tauri") -and (Test-Path "package.json")) { $InsideRepo = $true; Write-Host "   ✅ Found repository in current directory." -ForegroundColor Green }
+elseif ((Test-Path "..\src-tauri") -and (Test-Path "..\package.json")) { Set-Location ".."; $InsideRepo = $true; Write-Host "   ✅ Found repository in parent directory. Moved up." -ForegroundColor Green }
+elseif ((Test-Path "$RepoName\src-tauri") -and (Test-Path "$RepoName\package.json")) { Set-Location $RepoName; $InsideRepo = $true; Write-Host "   ✅ Found repository in subdirectory. Moved in." -ForegroundColor Green }
+if (-not $InsideRepo) { Write-Host "   📥 Repository not found. Cloning..." -ForegroundColor Yellow; git clone https://github.com/d3khan/spotify_downloader.git; Set-Location $RepoName }
+if (Test-Path ".git") { Write-Host "🔄 Pulling latest changes from Git..." -ForegroundColor Cyan; git pull }
 
-if ((Test-Path "src-tauri") -and (Test-Path "package.json")) {
-    $InsideRepo = $true; Write-Host "   ✅ Found repository in current directory." -ForegroundColor Green
-}
-elseif ((Test-Path "..\src-tauri") -and (Test-Path "..\package.json")) {
-    Set-Location ".."; $InsideRepo = $true; Write-Host "   ✅ Found repository in parent directory. Moved up." -ForegroundColor Green
-}
-elseif ((Test-Path "$RepoName\src-tauri") -and (Test-Path "$RepoName\package.json")) {
-    Set-Location $RepoName; $InsideRepo = $true; Write-Host "   ✅ Found repository in subdirectory. Moved in." -ForegroundColor Green
-}
-
-if (-not $InsideRepo) {
-    Write-Host "   📥 Repository not found. Cloning..." -ForegroundColor Yellow
-    git clone https://github.com/d3khan/spotify_downloader.git
-    Set-Location $RepoName
-}
-
-if (Test-Path ".git") {
-    Write-Host "🔄 Pulling latest changes from Git..." -ForegroundColor Cyan
-    git pull
-}
-
-# --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
+# --- STAGE 2: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
 Write-Host "🎵 Fetching sidecar binaries..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 
@@ -208,11 +192,11 @@ if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
     $LocalYtDlp = & $YtDlpPath --version 2>$null
     $LatestYtDlp = $null
     try {
-        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -TimeoutSec 15
-        $LatestYtDlp = $json.tag_name
-    } catch {
-        Write-Host "   ⚠️ Could not check for updates (offline?). Using existing version."
-    }
+        # Uses HEAD request via curl to avoid API rate limits
+        $headers = curl.exe -sI "https://github.com/yt-dlp/yt-dlp/releases/latest"
+        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
+        if ($loc -match "/tag/([^\s]+)") { $LatestYtDlp = $matches[1].Trim() }
+    } catch {}
 
     if ($LatestYtDlp -and $LocalYtDlp -ne $LatestYtDlp) {
         Write-Host "   ⚠️ yt-dlp is out of date (local: $LocalYtDlp, latest: $LatestYtDlp)." -ForegroundColor Yellow
@@ -220,12 +204,8 @@ if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
         if ($response -match "^[Yy]") {
             Write-Host "   ⬇️ Downloading yt-dlp..."
             curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-        } else {
-            Write-Host "   ⏭️ Skipping update."
-        }
-    } elseif ($LatestYtDlp) {
-        Write-Host "   ✅ yt-dlp is up to date ($LocalYtDlp)."
-    }
+        } else { Write-Host "   ⏭️ Skipping update." }
+    } elseif ($LatestYtDlp) { Write-Host "   ✅ yt-dlp is up to date ($LocalYtDlp)." }
 } else {
     Write-Host "   ⬇️ Downloading yt-dlp (not found)..."
     curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
@@ -240,27 +220,20 @@ $NeedDownload = $false
 
 if ((Test-Path $FfmpegPath) -and (Test-Path $FfprobePath) -and (Get-Item $FfmpegPath).Length -gt 0) {
     Write-Host "   🔍 Checking FFmpeg version..."
-    $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd HH:mm")
-    $LatestDate = $null
+    $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd")
+    $LatestTag = $null
     try {
-        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" -TimeoutSec 15
-        if ($json.name -match "Latest Auto-Build \((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)") {
-            $LatestDate = $matches[1]
-        }
-    } catch {
-        Write-Host "   ⚠️ Could not check for updates. Using existing version."
-    }
+        $headers = curl.exe -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest"
+        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
+        if ($loc -match "/tag/([^\s]+)") { $LatestTag = $matches[1].Trim() }
+    } catch {}
 
-    if ($LatestDate -and $LatestDate -gt $LocalDate) {
-        Write-Host "   ⚠️ FFmpeg is out of date (local: $LocalDate, latest: $LatestDate)." -ForegroundColor Yellow
+    if ($LatestTag -and $LatestTag -match $LocalDate) {
+        Write-Host "   ✅ FFmpeg is up to date." -ForegroundColor Green
+    } elseif ($LatestTag) {
+        Write-Host "   ⚠️ FFmpeg is out of date (local build: $LocalDate, latest build: $LatestTag)." -ForegroundColor Yellow
         $response = Read-Host "   Do you want to update FFmpeg & FFprobe? (y/n)"
-        if ($response -match "^[Yy]") {
-            $NeedDownload = $true
-        } else {
-            Write-Host "   ⏭️ Skipping update."
-        }
-    } elseif ($LatestDate) {
-        Write-Host "   ✅ FFmpeg is up to date ($LocalDate)."
+        if ($response -match "^[Yy]") { $NeedDownload = $true } else { Write-Host "   ⏭️ Skipping update." }
     }
 } else {
     Write-Host "   ⬇️ Downloading FFmpeg (not found)..."
@@ -272,37 +245,24 @@ if ($NeedDownload) {
         try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Archive)).Dispose()
-        } catch {
-            Write-Host "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..." -ForegroundColor Yellow
-            Remove-Item -Force $Archive
-        }
+        } catch { Remove-Item -Force $Archive }
     }
-
     if (-not (Test-Path $Archive)) {
-        Write-Host "   ⬇️ Downloading FFmpeg (this may take a minute)..."
+        Write-Host "   ⬇️ Downloading FFmpeg..."
         curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $Archive "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     }
-
     Write-Host "   📦 Extracting FFmpeg..."
     if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
     Expand-Archive -Path $Archive -DestinationPath $TempDir -Force
-    
     Copy-Item "$TempDir\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination $FfmpegPath -Force
     Copy-Item "$TempDir\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe" -Destination $FfprobePath -Force
-    
     Remove-Item -Recurse -Force $TempDir
     Remove-Item -Force $Archive
 }
 
 # --- STAGE 3: BUILD ---
-if (-not (Test-Path "node_modules")) {
-    Write-Host "📦 Installing Node dependencies (npm)..." -ForegroundColor Cyan
-    npm install
-} else {
-    Write-Host "   ✅ Node dependencies already installed." -ForegroundColor Green
-}
-
-Write-Host "🛠️ Building Tauri Application (this will only recompile changed files)..." -ForegroundColor Cyan
+if (-not (Test-Path "node_modules")) { Write-Host "📦 Installing Node dependencies (npm)..." -ForegroundColor Cyan; npm install } else { Write-Host "   ✅ Node dependencies already installed." -ForegroundColor Green }
+Write-Host "🛠️ Building Tauri Application..." -ForegroundColor Cyan
 npm run tauri build
 
 # --- STAGE 4: COLLECT ---
@@ -310,7 +270,6 @@ Write-Host "📁 Collecting build artifacts..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 Copy-Item "src-tauri\target\release\bundle\msi\*.msi" -Destination "dist\" -ErrorAction SilentlyContinue
 Copy-Item "src-tauri\target\release\bundle\nsis\*.exe" -Destination "dist\" -ErrorAction SilentlyContinue
-
 Write-Host "✅ Build complete! Your installers are ready in the 'dist' folder." -ForegroundColor Green
 """
 
@@ -325,72 +284,33 @@ if %errorlevel% neq 0 ( echo Rust not installed. & pause & exit /b 1 )
 where node >nul 2>nul
 if %errorlevel% neq 0 ( echo Node.js not installed. & pause & exit /b 1 )
 
-:: --- STAGE 1: REPO LOCATION (FOOLPROOF) ---
+:: --- STAGE 1: REPO LOCATION ---
 set REPO_NAME=spotify_downloader
 set INSIDE_REPO=0
+if exist "src-tauri" if exist "package.json" ( set INSIDE_REPO=1 & echo    Found repository in current directory. )
+if !INSIDE_REPO! equ 0 if exist "..\src-tauri" if exist "..\package.json" ( pushd .. & set INSIDE_REPO=1 & echo    Found repository in parent directory. Moved up. )
+if !INSIDE_REPO! equ 0 if exist "%REPO_NAME%\src-tauri" if exist "%REPO_NAME%\package.json" ( cd %REPO_NAME% & set INSIDE_REPO=1 & echo    Found repository in subdirectory. Moved in. )
+if !INSIDE_REPO! equ 0 ( echo    Repository not found. Cloning... & git clone https://github.com/d3khan/spotify_downloader.git & cd %REPO_NAME% )
+if exist ".git" ( echo Pulling latest changes from Git... & git pull )
 
-if exist "src-tauri" if exist "package.json" (
-    set INSIDE_REPO=1
-    echo    Found repository in current directory.
-)
-
-if !INSIDE_REPO! equ 0 (
-    if exist "..\src-tauri" if exist "..\package.json" (
-        pushd ..
-        set INSIDE_REPO=1
-        echo    Found repository in parent directory. Moved up.
-    )
-)
-
-if !INSIDE_REPO! equ 0 (
-    if exist "%REPO_NAME%\src-tauri" if exist "%REPO_NAME%\package.json" (
-        cd %REPO_NAME%
-        set INSIDE_REPO=1
-        echo    Found repository in subdirectory. Moved in.
-    )
-)
-
-if !INSIDE_REPO! equ 0 (
-    echo    Repository not found. Cloning...
-    git clone https://github.com/d3khan/spotify_downloader.git
-    cd %REPO_NAME%
-)
-
-if exist ".git" (
-    echo Pulling latest changes from Git...
-    git pull
-)
-
-:: --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
+:: --- STAGE 2: SIDECAR BINARIES ---
 echo Fetching sidecar binaries...
 if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 
 :: 1. yt-dlp
 set YTDLP_PATH=src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe
 set NEED_YTDLP_UPDATE=0
-
 if exist "%YTDLP_PATH%" (
     echo    Checking yt-dlp version...
     for /f "delims=" %%v in ('"%YTDLP_PATH%" --version 2^>nul') do set LOCAL_YTDLP=%%v
-    
-    :: Fetch latest tag using curl and PowerShell to parse JSON
-    for /f "delims=" %%v in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest' -TimeoutSec 10).tag_name" 2^>nul') do set LATEST_YTDLP=%%v
-
+    for /f "delims=" %%v in ('powershell -Command "(curl.exe -sI 'https://github.com/yt-dlp/yt-dlp/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_YTDLP=%%v
     if "!LOCAL_YTDLP!" neq "!LATEST_YTDLP!" (
         echo    yt-dlp is out of date ^(local: !LOCAL_YTDLP!, latest: !LATEST_YTDLP!^).
         set /p UPDATE_YTDLP="   Do you want to update it? (y/n) "
         if /i "!UPDATE_YTDLP!"=="y" set NEED_YTDLP_UPDATE=1
-    ) else (
-        echo    yt-dlp is up to date ^(!LOCAL_YTDLP!^).
-    )
-) else (
-    echo    Downloading yt-dlp ^(not found^)...
-    set NEED_YTDLP_UPDATE=1
-)
-
-if !NEED_YTDLP_UPDATE! equ 1 (
-    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-)
+    ) else ( echo    yt-dlp is up to date ^(!LOCAL_YTDLP!^). )
+) else ( echo    Downloading yt-dlp ^(not found^)... & set NEED_YTDLP_UPDATE=1 )
+if !NEED_YTDLP_UPDATE! equ 1 ( curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" )
 
 :: 2. FFmpeg & FFprobe
 set FFMPEG_PATH=src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe
@@ -398,62 +318,32 @@ set FFPROBE_PATH=src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe
 set ARCHIVE=ffmpeg-win.zip
 set TEMP_DIR=ffmpeg-temp
 set NEED_FFMPEG_UPDATE=0
-
 if exist "%FFMPEG_PATH%" (
     echo    Checking FFmpeg version...
-    :: Get local file date in YYYY-MM-DD HH:MM
-    for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd HH:mm')" 2^>nul') do set LOCAL_DATE=%%d
-    
-    :: Get latest date from BtbN release name
-    for /f "delims=" %%d in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest' -TimeoutSec 10).name -replace '.*\((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\).*','$1'" 2^>nul') do set LATEST_DATE=%%d
-
-    if "!LATEST_DATE!" gtr "!LOCAL_DATE!" (
-        echo    FFmpeg is out of date ^(local: !LOCAL_DATE!, latest: !LATEST_DATE!^).
+    for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd')" 2^>nul') do set LOCAL_DATE=%%d
+    for /f "delims=" %%d in ('powershell -Command "(curl.exe -sI 'https://github.com/BtbN/FFmpeg-Builds/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_TAG=%%d
+    echo !LATEST_TAG! | findstr /C:"!LOCAL_DATE!" >nul
+    if !errorlevel! neq 0 (
+        echo    FFmpeg is out of date ^(local build: !LOCAL_DATE!, latest build: !LATEST_TAG!^).
         set /p UPDATE_FFMPEG="   Do you want to update FFmpeg & FFprobe? (y/n) "
         if /i "!UPDATE_FFMPEG!"=="y" set NEED_FFMPEG_UPDATE=1
-    ) else (
-        echo    FFmpeg is up to date ^(!LOCAL_DATE!^).
-    )
-) else (
-    echo    Downloading FFmpeg ^(not found^)...
-    set NEED_FFMPEG_UPDATE=1
-)
-
+    ) else ( echo    FFmpeg is up to date. )
+) else ( echo    Downloading FFmpeg ^(not found^)... & set NEED_FFMPEG_UPDATE=1 )
 if !NEED_FFMPEG_UPDATE! equ 1 (
-    if exist "%ARCHIVE%" (
-        powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path '%ARCHIVE%')).Dispose(); exit 0 } catch { exit 1 }"
-        if !errorlevel! neq 0 (
-            echo    Existing FFmpeg archive is corrupt. Deleting...
-            del /F /Q "%ARCHIVE%"
-        )
-    )
-
-    if not exist "%ARCHIVE%" (
-        echo    Downloading FFmpeg ^(this may take a minute^)...
-        curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%ARCHIVE%" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    )
-
+    if exist "%ARCHIVE%" ( powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path '%ARCHIVE%')).Dispose(); exit 0 } catch { exit 1 }" & if !errorlevel! neq 0 ( del /F /Q "%ARCHIVE%" ) )
+    if not exist "%ARCHIVE%" ( curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%ARCHIVE%" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" )
     echo    Extracting FFmpeg...
     if exist "%TEMP_DIR%" rmdir /S /Q "%TEMP_DIR%"
     powershell -Command "Expand-Archive -Path '%ARCHIVE%' -DestinationPath '%TEMP_DIR%' -Force"
-    
     copy /Y "%TEMP_DIR%\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "%FFMPEG_PATH%" >nul
     copy /Y "%TEMP_DIR%\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe" "%FFPROBE_PATH%" >nul
-    
     rmdir /S /Q "%TEMP_DIR%"
     del /F /Q "%ARCHIVE%"
 )
 
 :: --- STAGE 3: BUILD ---
-if not exist "node_modules" (
-    echo Installing Node dependencies...
-    call npm install
-    if %errorlevel% neq 0 goto :error
-) else (
-    echo    Node dependencies already installed.
-)
-
-echo Building Tauri Application (this will only recompile changed files)...
+if not exist "node_modules" ( echo Installing Node dependencies... & call npm install & if %errorlevel% neq 0 goto :error ) else ( echo    Node dependencies already installed. )
+echo Building Tauri Application...
 call npm run tauri build
 if %errorlevel% neq 0 goto :error
 
@@ -461,7 +351,6 @@ if %errorlevel% neq 0 goto :error
 if not exist "dist" mkdir "dist"
 copy /Y "src-tauri\target\release\bundle\msi\*.msi" "dist\" >nul 2>nul
 copy /Y "src-tauri\target\release\bundle\nsis\*.exe" "dist\" >nul 2>nul
-
 echo.
 echo Build complete! Your installers are in the 'dist' folder.
 pause
