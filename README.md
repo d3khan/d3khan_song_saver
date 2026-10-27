@@ -1,18 +1,18 @@
 # d3khan song saver
 
-A Windows-first desktop app (Tauri v2 + Rust) that downloads Spotify tracks, albums, and
+A Windows-first desktop app (Tauri v2 + Rust) that downloads SoundCloud tracks, albums, and
 playlists as **tagged MP3 files** and keeps playlist folders in sync over time. The UI is a
 self-contained vanilla HTML/CSS/JS frontend.
 
-Spotify is used for **metadata only**. Audio is fetched from public sources through
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) and converted/tagged locally with FFmpeg and
+SoundCloud is the source for **metadata only**. Audio is fetched from public sources through
+Source audio comes from SoundCloud via `soundcloud-rs` (search + progressive/HLS). Native Rust audio pipeline (`symphonia` for AAC decode, `shine-rs` for MP3 encoding) replaces FFmpeg entirely — no external binaries required at runtime. Requires a C compiler (for `shine-rs` / `mp3lame`) when building from source.
 [lofty](https://github.com/Serial-ATA/lofty-rs). There is no DRM bypass and no Spotify audio
 download.
 
 > **Legal note** — Downloading audio may violate the terms of service of the source site and
 > the rights of copyright holders. Use this tool only for content you are allowed to download
 > (for example your own uploads or public-domain material), and obey the law where you live.
-> The authors take no responsibility for misuse. Spotify Premium does not grant download
+> The authors take no responsibility for misuse. Source site terms does not grant download
 > rights to third-party audio.
 
 ---
@@ -24,7 +24,7 @@ download.
 - **Playlist** → a named subfolder with zero-padded position prefixes (`01 - Title - Artist.mp3`).
 - **Bulk mode** → a timestamped master folder; loose tracks live in the master, albums and
   playlists get subfolders inside it.
-- **Playlist sync** via a `.playlist_sync.json` state file in each playlist folder:
+- **Playlist sync** via a `.soundcloud_sync.json` state file in each playlist folder:
   - skips tracks that are already present,
   - downloads newly added tracks,
   - prompts before deleting files for tracks removed from the playlist,
@@ -32,13 +32,13 @@ download.
   - detects the same playlist in another folder and asks whether to sync there instead.
 - **ID3v2.3 tags** written from the Spotify metadata: title, artist, album artist, album,
   track/total, disc, release date, genres, ISRC, label, copyright, explicit flag, and the
-  Spotify URL as a comment. ID3v2.3 is intentional — Windows Explorer's thumbnail handler
+  SoundCloud URL as a comment. ID3v2.3 is intentional — Windows Explorer's thumbnail handler
   reads APIC art from v2.3 but often shows a generic icon for v2.4, so every downloaded file
   gets its cover as the Explorer thumbnail (cover art is still best-effort).
 - Per-track failure isolation: a failed track is reported and the job continues. If YouTube
   silently drops a search term (it returns zero hits for some explicit words), the app retries
   with a cleaned query before reporting the track as failed.
-- Full **Spotify Authorization Code + PKCE** login (no client secret required). Tokens are
+- Full **No Spotify auth required — SoundCloud public search** login (no client secret required). Tokens are
   stored in Windows Credential Manager and refreshed automatically. The public Client ID is
   compiled into release builds, so people who install the app never enter developer
   credentials.
@@ -52,7 +52,7 @@ download.
 | Windows 10/11 + WebView2 | WebView2 ships with current Windows; otherwise install the Evergreen Runtime |
 | Rust (MSVC toolchain) | Install via [rustup](https://rustup.rs). The repo pins `stable-x86_64-pc-windows-msvc` in `rust-toolchain.toml`; Visual Studio Build Tools with the C++ workload are required |
 | Node.js 20+ | Only for the Tauri CLI (`npm install`, `npm run dev`) |
-| yt-dlp + FFmpeg | **Bundled with the installer.** Source builds read them from `src-tauri/binaries/`; install them with `winget install yt-dlp.yt-dlp` and `winget install Gyan.FFmpeg` if you build from source |
+| pure-Rust soundcloud-rs + symphonia + shine-rs | **Bundled with the installer.** Source builds read them from `src-tauri/binaries/`; install them with `winget install yt-dlp.yt-dlp` and `winget install Gyan.FFmpeg` if you build from source |
 
 Binary lookup order (first hit wins):
 
@@ -77,7 +77,7 @@ need this section if you build the app yourself:
    an app (any name; choose **Web API**).
 2. Add this **Redirect URI** verbatim:
    `http://127.0.0.1:8888/callback`
-3. Copy the **Client ID**. The Client Secret is optional (PKCE does not use it).
+3. Copy the **Client ID**. The Client Secret (not used for SoundCloud public search) is optional (PKCE does not use it).
 4. While the app is in Development Mode, add your Spotify account under **User Management**
    (up to 25 users).
 
@@ -86,7 +86,7 @@ The app requests these scopes: `playlist-read-private`, `playlist-read-collabora
 
 ### Client ID configuration (build time)
 
-The build script reads `SPOTIFY_CLIENT_ID` from `.env` and compiles the value into the binary.
+The build script reads `SOUNDCLOUD_CLIENT_ID (optional; public client used by default)` from `.env` and compiles the value into the binary.
 That is why the installed app has no credential fields: end users only sign in.
 
 1. Runtime overrides (development): a saved settings file, then `.env` / process environment.
@@ -95,14 +95,14 @@ That is why the installed app has no credential fields: end users only sign in.
    this build.”
 
 ```dotenv
-SPOTIFY_CLIENT_ID=your_client_id
+SOUNDCLOUD_CLIENT_ID (optional; public client used by default)=your_client_id
 SPOTIFY_CLIENT_SECRET=optional
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 ```
 
-`.env` is gitignored, and the Client Secret is never embedded in the binary. The optional
+`.env` is gitignored, and the Client Secret (not used for SoundCloud public search) is never embedded in the binary. The optional
 secret (if provided) is stored in Windows Credential Manager under the service
-`spotify_downloader`; it is never returned to the UI or logged. Use **Log out** in Settings to
+`d3khan-song-saver`; it is never returned to the UI or logged. Use **Log out** in Settings to
 clear the saved Spotify session.
 
 ---
@@ -118,17 +118,17 @@ As the installation script is running create the .env file and fill it with the 
 
 **Windows (PowerShell)**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_windows.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/d3khan/d3khan-song-saver/main/installers/build_windows.ps1 | iex
 ```
 
 **Windows (CMD)**
 ```cmd
-curl -sSL https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_windows.cmd -o build.cmd && build.cmd
+curl -sSL https://raw.githubusercontent.com/d3khan/d3khan-song-saver/main/installers/build_windows.cmd -o build.cmd && build.cmd
 ```
 
 **Linux / macOS**
 ```bash
-curl -sSL https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_linux.sh | bash
+curl -sSL https://raw.githubusercontent.com/d3khan/d3khan-song-saver/main/installers/build_linux.sh | bash
 ```
 
 Once completed, your installers will be available in the `dist/` folder.
@@ -174,7 +174,7 @@ Single link, **Download** mode:
 │   └── 01 - Give Life Back to Music - Daft Punk.mp3
 └── My Playlist\                                 # playlist link
     ├── 01 - Get Lucky - Daft Punk.mp3
-    └── .playlist_sync.json
+    └── .soundcloud_sync.json
 ```
 
 Bulk mode creates one master folder per job:
@@ -212,7 +212,7 @@ many v2.4 files, and every mainstream player reads v2.3.
 
 ## Playlist sync
 
-`.playlist_sync.json` lives inside the playlist folder and records the Spotify playlist id plus
+`.soundcloud_sync.json` lives inside the playlist folder and records the Spotify playlist id plus
 one entry per downloaded track:
 
 ```json
@@ -246,7 +246,7 @@ What a sync run does:
 6. Leave untracked files alone — they are reported in the log, never deleted or adopted.
 
 The state file is written atomically after every successful track. A corrupt file is backed
-up as `.playlist_sync.json.corrupt-<timestamp>` and a fresh state is started. Sync is available
+up as `.soundcloud_sync.json.corrupt-<timestamp>` and a fresh state is started. Sync is available
 for **one playlist link at a time**; bulk sync is intentionally disabled. Download mode still
 creates the state file so the folder can be synced later; it never deletes or prompts.
 
@@ -272,7 +272,7 @@ src-tauri/
 docs/                     research, architecture, implementation contract
 ```
 
-Tokens: Windows Credential Manager (`spotify_downloader` / `spotify_token`), full rspotify
+Tokens: Windows Credential Manager (`d3khan-song-saver` / `spotify_token`), full rspotify
 `Token` JSON. The access token is refreshed five minutes before it expires; if Spotify's
 refresh response omits the refresh token, the existing one is carried forward instead of
 being dropped. Refresh tokens last six months from authorization, so the app can sit unused
@@ -289,7 +289,7 @@ in again.
 | “Port 8888 is already in use” | Close the other process or set `SPOTIFY_REDIRECT_URI` to another loopback port **and** register it in the Spotify dashboard |
 | Spotify rejects the playlist (404) | Editorial/algorithmic playlists (e.g. “Today’s Top Hits” IDs starting `37i9…`) are not readable by third-party apps; use a playlist you own or follow, and check User Management |
 | “Connect Spotify in Settings first” | Complete the browser round-trip from the auth banner |
-| "Spotify isn’t configured for this build" | Rebuild with `.env` containing `SPOTIFY_CLIENT_ID` so `build.rs` can embed it |
+| "Spotify isn’t configured for this build" | Rebuild with `.env` containing `SOUNDCLOUD_CLIENT_ID (optional; public client used by default)` so `build.rs` can embed it |
 | Explorer shows a generic icon or the VLC cone instead of the cover | The file was tagged as ID3v2.4 by an older build; re-download it (or re-tag it to v2.3) with the current version |
 | Tracks download with the wrong audio | yt-dlp matches the first search result (`artist - title`). Rename/curate the source or improve tags; no perfect matching is guaranteed |
 | “No YouTube results for … (N query variants tried)” | YouTube returns zero hits for that exact query. The app already retries without the separator and without explicit words; if the title is still too unusual, add the track manually or rename the source |

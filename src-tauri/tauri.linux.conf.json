@@ -1,9 +1,0 @@
-{
-    "bundle": {
-        "resources": {
-            "binaries/yt-dlp-x86_64-unknown-linux-gnu": "yt-dlp",
-            "binaries/ffmpeg-x86_64-unknown-linux-gnu": "ffmpeg",
-            "binaries/ffprobe-x86_64-unknown-linux-gnu": "ffprobe"
-        }
-    }
-}

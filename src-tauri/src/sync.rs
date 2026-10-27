@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::metadata::TrackMeta;
 use crate::naming;
 
-pub const STATE_FILENAME: &str = ".playlist_sync.json";
+pub const STATE_FILENAME: &str = ".soundcloud_sync.json";
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -256,7 +256,7 @@ pub fn scan_for_playlist(root: &Path, playlist_id: &str, exclude: &Path) -> Vec<
     matches
 }
 
-/// Diff the Spotify track list against the folder state and on-disk files.
+/// Diff the SoundCloud track list against the folder state and on-disk files.
 pub fn plan_playlist(
     dir: &Path,
     playlist_name: &str,
@@ -614,7 +614,7 @@ mod tests {
     use super::*;
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("spotify-sync-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("d3khan-song-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
     }

@@ -20,37 +20,13 @@
         </div>
       </div>
       <div class="header-status">
-        <span id="account-chip" class="account-chip" hidden>
-          <span class="account-dot" aria-hidden="true"></span>
-          <span id="account-name">Spotify connected</span>
-        </span>
         <span id="status-pill" class="status-pill" data-status="idle">
           <span class="pill-dot" aria-hidden="true"></span>
           <span id="status-text">Idle</span>
         </span>
-        <button type="button" id="settings-btn" class="btn ghost icon-btn" aria-label="Settings" title="Settings">⚙</button>
+        <button type="button" id="settings-btn" class="btn ghost icon-btn" aria-label="Settings" title="Settings" hidden></button>
       </div>
     </header>
-
-    <!-- ============ Spotify auth banner ============ -->
-    <div id="auth-banner" class="auth-banner" data-state="unconfigured" role="status" aria-live="polite">
-      <span class="auth-dot" aria-hidden="true"></span>
-      <div class="auth-copy">
-        <p class="auth-title" id="auth-banner-title">Spotify is not configured in this build</p>
-        <p class="auth-detail" id="auth-banner-detail">Reinstall the app or contact support to enable Spotify sign-in.</p>
-      </div>
-      <div class="auth-actions" id="auth-actions" hidden>
-        <button type="button" id="auth-connect-btn" class="btn primary sm">Connect Spotify</button>
-      </div>
-      <div class="auth-wait" id="auth-wait" hidden>
-        <span class="spinner" aria-hidden="true"></span>
-        <div class="auth-wait-copy">
-          <p class="auth-wait-text">Waiting for Spotify authorization… Complete the sign-in in your browser.</p>
-          <p class="auth-wait-timer" id="auth-wait-timer"></p>
-        </div>
-        <button type="button" id="auth-wait-cancel" class="btn ghost sm">Cancel</button>
-      </div>
-    </div>
 
     <!-- ============ Main ============ -->
     <main class="layout" id="main">
@@ -81,10 +57,11 @@
           </div>
 
           <div class="input-panel" id="panel-single" role="tabpanel" aria-labelledby="tab-single">
-            <label class="label" for="url-input">Spotify link</label>
+            <label class="label" for="url-input">Search SoundCloud (Artist - Title) or paste a URL</label>
             <input type="url" id="url-input" class="text-input" spellcheck="false" autocomplete="off"
-                   placeholder="https://open.spotify.com/playlist/…" aria-describedby="url-note" />
-            <p class="field-note" id="url-note">Paste a track, album, or playlist link.</p>
+                   placeholder="Rustage - Bow Down to the King… or soundcloud.com/…" aria-describedby="url-note" />
+            <p class="field-note" id="url-note">Paste an open.spotify.com link (Odesli resolves to SoundCloud) or search directly.</p>
+            <div id="search-results" class="search-results" hidden></div>
           </div>
 
           <div class="input-panel" id="panel-bulk" role="tabpanel" aria-labelledby="tab-bulk" hidden>
