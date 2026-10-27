@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "d3khan song saver",
+  "mainBinaryName": "d3khan song saver",
+  "version": "0.1.0",
+  "identifier": "com.d3khan.songsaver",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "d3khan song saver",
+        "width": 1100,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "binaries/yt-dlp.exe": "yt-dlp.exe",
+      "binaries/ffmpeg.exe": "ffmpeg.exe",
+      "binaries/ffprobe.exe": "ffprobe.exe"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    },
+    "shortDescription": "Download and sync Spotify playlists as tagged MP3s",
+    "longDescription": "A desktop utility that downloads Spotify tracks, albums, and playlists as MP3 files, embeds ID3 metadata, and keeps playlist folders in sync using a local .playlist_sync.json state file."
+  }
+}

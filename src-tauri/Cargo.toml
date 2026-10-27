@@ -1,0 +1,65 @@
+[package]
+name = "spotify-downloader"
+version = "0.1.0"
+description = "Spotify playlist downloader and sync desktop app"
+authors = ["d3khan"]
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+# Tauri core
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-dialog = "2.8.3"
+
+# Serialization
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+# Async runtime (Tauri already runs Tokio; these features cover process/fs/time)
+tokio = { version = "1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "fs",
+    "time",
+    "sync",
+    "io-util",
+] }
+
+# Spotify metadata + OAuth PKCE
+rspotify = "0.16.1"
+
+# HTTP (cover art download); keep on the 0.12 line used by rspotify
+reqwest = { version = "0.12.28", features = ["json"] }
+
+# MP3/ID3 tagging
+lofty = "0.25.5"
+
+# OS credential store (Windows Credential Manager)
+keyring = "4.2.0"
+
+# Filesystem traversal for nested-folder scan
+walkdir = "2.5.0"
+
+# Misc
+uuid = { version = "1.18.2", features = ["v4"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+thiserror = "2.0.21"
+webbrowser = "1.2.5"
+dotenvy = "0.15.7"
+url = "2.5.7"
+regex = "1.13.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

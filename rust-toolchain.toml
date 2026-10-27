@@ -1,0 +1,4 @@
+# Windows-first build toolchain. The machine's default Rust host is GNU;
+# Tauri needs MSVC. On Linux, change this to "stable".
+[toolchain]
+channel = "stable-x86_64-pc-windows-msvc"
