@@ -20,7 +20,6 @@ if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then echo "â
 
 # --- STAGE 1: REPO LOCATION (FOOLPROOF) ---
 REPO_NAME="spotify_downloader"
-# We check for the 'src-tauri' folder to verify we are in the right place
 if [ -d "src-tauri" ] && [ -f "package.json" ]; then
     echo "   âœ… Found repository in current directory."
 elif [ -d "../src-tauri" ] && [ -f "../package.json" ]; then

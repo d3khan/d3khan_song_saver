@@ -27,12 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "resources": {
-      "binaries/yt-dlp.exe": "yt-dlp.exe",
-      "binaries/ffmpeg.exe": "ffmpeg.exe",
-      "binaries/ffprobe.exe": "ffprobe.exe"
-    },
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

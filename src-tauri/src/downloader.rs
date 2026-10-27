@@ -78,8 +78,17 @@ pub fn discover_binaries() -> Result<Binaries, String> {
     Ok(Binaries { yt_dlp, ffmpeg_dir })
 }
 
+fn get_bin_name(base_name: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{}.exe", base_name)
+    } else {
+        base_name.to_string()
+    }
+}
+
 fn find_yt_dlp() -> Option<PathBuf> {
-    for candidate in candidate_paths("yt-dlp.exe", "YTDLP_PATH") {
+    let bin_name = get_bin_name("yt-dlp");
+    for candidate in candidate_paths(&bin_name, "YTDLP_PATH") {
         if probe_binary(&candidate) {
             return Some(candidate);
         }
@@ -89,7 +98,8 @@ fn find_yt_dlp() -> Option<PathBuf> {
 }
 
 fn find_ffmpeg() -> Option<(PathBuf, Option<PathBuf>)> {
-    for candidate in candidate_paths("ffmpeg.exe", "FFMPEG_PATH") {
+    let bin_name = get_bin_name("ffmpeg");
+    for candidate in candidate_paths(&bin_name, "FFMPEG_PATH") {
         if probe_binary(&candidate) {
             let dir = candidate.parent().map(Path::to_path_buf);
             return Some((candidate, dir));
