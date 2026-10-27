@@ -1,9 +1,5 @@
 //! Minimal job runner skeleton (SoundCloud pipeline).
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::naming;
 
 pub struct JobStart {
     pub job_id: String,
@@ -13,16 +9,10 @@ pub struct JobStart {
     pub output_dir: PathBuf,
 }
 
-pub fn spawn_job(app: tauri::AppHandle, start: JobStart) {
+pub fn spawn_job(_app: tauri::AppHandle, _start: JobStart) {
     tauri::async_runtime::spawn(async move {
         // Minimal skeleton
-        let _ = start;
+        // When you are ready to implement background jobs, you will trigger
+        // downloader::download_track() in a loop here.
     });
-}
-
-fn track_label(_meta: &crate::metadata::TrackMeta) -> String {
-    String::new()
-}
-fn file_ok(_path: &std::path::Path) -> bool {
-    false
 }

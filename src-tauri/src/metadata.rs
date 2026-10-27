@@ -1,7 +1,3 @@
-//! SoundCloud metadata (v0.2.0): soundcloud-rs search / track / playlist parsing.
-
-use std::collections::HashMap;
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CollectionKind {
     #[default]
@@ -43,13 +39,17 @@ pub struct Collection {
 }
 
 pub fn parse_soundcloud_url(input: &str) -> Result<(CollectionKind, String), String> {
-    Err("SoundCloud URL parsing not yet implemented".to_string())
+    if input.contains("/sets/") {
+        Ok((CollectionKind::Playlist, input.to_string()))
+    } else {
+        Ok((CollectionKind::Track, input.to_string()))
+    }
 }
 
 pub async fn fetch_collection(
     _kind: CollectionKind,
     _id: &str,
-    source_url: &str,
+    _source_url: &str,
 ) -> Result<Collection, String> {
-    Err("SoundCloud fetch not yet implemented".to_string())
+    Err("SoundCloud collection fetching not yet implemented in metadata.rs".to_string())
 }

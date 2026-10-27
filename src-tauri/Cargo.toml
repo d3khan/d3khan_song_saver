@@ -22,34 +22,22 @@ tauri-plugin-dialog = "2.8.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 
-# Async runtime (Tauri already runs Tokio; these features cover process/fs/time)
-tokio = { version = "1.54.1", features = [
-    "rt-multi-thread",
-    "macros",
-    "process",
-    "fs",
-    "time",
-    "sync",
-    "io-util",
-] }
+# Async runtime
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "fs", "time", "sync", "io-util"] }
 
-# SoundCloud API (search, track/playlist metadata)
-soundcloud-rs = { version = "0.12.0", default-features = false }
+# SoundCloud API
+soundcloud-rs = { version = "0.12.1", default-features = false }
 
-# HTTP (audio + cover art download)
+# HTTP
 reqwest = { version = "0.12.28", features = ["json"] }
 
-# Native audio pipeline: symphonia decodes HLS/AAC to PCM; shine-rs encodes MP3 (pure Rust, no FFI)
+# Native audio pipeline
 symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3"] }
-shine-rs = "0.1.4"
+shine-rs = "0.1.5"
 
-# MP3/ID3 tagging
+# Tagging & utils
 lofty = "0.21"
-
-# Filesystem traversal for nested-folder scan
 walkdir = "2.5.0"
-
-# Misc
 uuid = { version = "1.18.2", features = ["v4"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 thiserror = "2.0.21"
