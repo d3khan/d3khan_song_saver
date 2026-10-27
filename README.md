@@ -107,7 +107,34 @@ clear the saved Spotify session.
 
 ---
 
-## Run
+## Automated Build (One-Click)
+
+For the fastest way to build from source, you can use our automated build scripts. These scripts will automatically detect or clone the repository, fetch the correct `yt-dlp` and `FFmpeg` binaries for your OS, install dependencies, and compile the app. 
+
+If the download or build fails halfway, **simply run the command again** — the scripts are designed to resume from where they left off.
+
+**Windows (PowerShell)**
+```powershell
+iwr -useb https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_windows.ps1 | iex
+```
+
+**Windows (CMD)**
+```cmd
+curl -sSL https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_windows.cmd -o build.cmd && build.cmd
+```
+
+**Linux / macOS**
+```bash
+curl -sSL https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_linux.sh | bash
+```
+
+Once completed, your installers will be available in the `dist/` folder.
+
+---
+
+## Manual Build
+
+If you prefer to build manually, or if you are developing the app:
 
 ```powershell
 npm install
@@ -269,3 +296,10 @@ in again.
 MP3 is the only output format in v1. Cover art embedding is best-effort: a failed cover fetch
 never fails the track, but text tags are required. Files written by builds before the switch to
 ID3v2.3 keep their old tags until they are re-downloaded.
+```
+
+### Notes on the `curl` command:
+* **Linux:** `curl -sSL ... | bash` downloads the script and pipes it directly to bash.
+* **Windows PowerShell:** `iwr -useb ... | iex` is the standard PowerShell way to download and execute a script in memory without saving it to disk first.
+* **Windows CMD:** CMD doesn't have a native equivalent to piping into memory, so the command downloads it as `build.cmd` and then executes it immediately.
+* **Important:** Make sure you actually push the `installers` folder to your GitHub repo under the `main` branch for these links to work!
