@@ -42,36 +42,75 @@ if exist ".git" (
     git pull
 )
 
-:: --- STAGE 2: SIDECAR BINARIES (FOOLPROOF) ---
+:: --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
 echo Fetching sidecar binaries...
 if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 
+:: 1. yt-dlp
 set YTDLP_PATH=src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe
-if not exist "%YTDLP_PATH%" (
-    echo    Downloading yt-dlp...
-    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-) else ( echo    yt-dlp already exists. )
+set NEED_YTDLP_UPDATE=0
 
+if exist "%YTDLP_PATH%" (
+    echo    Checking yt-dlp version...
+    for /f "delims=" %%v in ('"%YTDLP_PATH%" --version 2^>nul') do set LOCAL_YTDLP=%%v
+    
+    :: Fetch latest tag using curl and PowerShell to parse JSON
+    for /f "delims=" %%v in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest' -TimeoutSec 10).tag_name" 2^>nul') do set LATEST_YTDLP=%%v
+
+    if "!LOCAL_YTDLP!" neq "!LATEST_YTDLP!" (
+        echo    yt-dlp is out of date ^(local: !LOCAL_YTDLP!, latest: !LATEST_YTDLP!^).
+        set /p UPDATE_YTDLP="   Do you want to update it? (y/n) "
+        if /i "!UPDATE_YTDLP!"=="y" set NEED_YTDLP_UPDATE=1
+    ) else (
+        echo    yt-dlp is up to date ^(!LOCAL_YTDLP!^).
+    )
+) else (
+    echo    Downloading yt-dlp ^(not found^)...
+    set NEED_YTDLP_UPDATE=1
+)
+
+if !NEED_YTDLP_UPDATE! equ 1 (
+    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+)
+
+:: 2. FFmpeg & FFprobe
 set FFMPEG_PATH=src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe
 set FFPROBE_PATH=src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe
 set ARCHIVE=ffmpeg-win.zip
 set TEMP_DIR=ffmpeg-temp
+set NEED_FFMPEG_UPDATE=0
 
-if not exist "%FFMPEG_PATH%" (
-    set NEED_DOWNLOAD=0
+if exist "%FFMPEG_PATH%" (
+    echo    Checking FFmpeg version...
+    :: Get local file date in YYYY-MM-DD HH:MM
+    for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd HH:mm')" 2^>nul') do set LOCAL_DATE=%%d
+    
+    :: Get latest date from BtbN release name
+    for /f "delims=" %%d in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest' -TimeoutSec 10).name -replace '.*\((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\).*','$1'" 2^>nul') do set LATEST_DATE=%%d
+
+    if "!LATEST_DATE!" gtr "!LOCAL_DATE!" (
+        echo    FFmpeg is out of date ^(local: !LOCAL_DATE!, latest: !LATEST_DATE!^).
+        set /p UPDATE_FFMPEG="   Do you want to update FFmpeg & FFprobe? (y/n) "
+        if /i "!UPDATE_FFMPEG!"=="y" set NEED_FFMPEG_UPDATE=1
+    ) else (
+        echo    FFmpeg is up to date ^(!LOCAL_DATE!^).
+    )
+) else (
+    echo    Downloading FFmpeg ^(not found^)...
+    set NEED_FFMPEG_UPDATE=1
+)
+
+if !NEED_FFMPEG_UPDATE! equ 1 (
     if exist "%ARCHIVE%" (
         powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path '%ARCHIVE%')).Dispose(); exit 0 } catch { exit 1 }"
         if !errorlevel! neq 0 (
             echo    Existing FFmpeg archive is corrupt. Deleting...
             del /F /Q "%ARCHIVE%"
-            set NEED_DOWNLOAD=1
         )
-    ) else (
-        set NEED_DOWNLOAD=1
     )
 
-    if !NEED_DOWNLOAD! equ 1 (
-        echo    Downloading FFmpeg (this may take a minute)...
+    if not exist "%ARCHIVE%" (
+        echo    Downloading FFmpeg ^(this may take a minute^)...
         curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%ARCHIVE%" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     )
 
@@ -84,7 +123,7 @@ if not exist "%FFMPEG_PATH%" (
     
     rmdir /S /Q "%TEMP_DIR%"
     del /F /Q "%ARCHIVE%"
-) else ( echo    FFmpeg and FFprobe already exist. )
+)
 
 :: --- STAGE 3: BUILD ---
 if not exist "node_modules" (

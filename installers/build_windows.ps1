@@ -29,23 +29,77 @@ if (Test-Path ".git") {
     git pull
 }
 
-# --- STAGE 2: SIDECAR BINARIES (FOOLPROOF) ---
+# --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
 Write-Host "🎵 Fetching sidecar binaries..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 
+# 1. yt-dlp
 $YtDlpPath = "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
-if (-not (Test-Path $YtDlpPath) -or (Get-Item $YtDlpPath).Length -eq 0) {
-    Write-Host "   ⬇️ Downloading yt-dlp..."
-    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-} else { Write-Host "   ✅ yt-dlp already exists." }
+if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
+    Write-Host "   🔍 Checking yt-dlp version..."
+    $LocalYtDlp = & $YtDlpPath --version 2>$null
+    $LatestYtDlp = $null
+    try {
+        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -TimeoutSec 15
+        $LatestYtDlp = $json.tag_name
+    } catch {
+        Write-Host "   ⚠️ Could not check for updates (offline?). Using existing version."
+    }
 
+    if ($LatestYtDlp -and $LocalYtDlp -ne $LatestYtDlp) {
+        Write-Host "   ⚠️ yt-dlp is out of date (local: $LocalYtDlp, latest: $LatestYtDlp)." -ForegroundColor Yellow
+        $response = Read-Host "   Do you want to update it? (y/n)"
+        if ($response -match "^[Yy]") {
+            Write-Host "   ⬇️ Downloading yt-dlp..."
+            curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        } else {
+            Write-Host "   ⏭️ Skipping update."
+        }
+    } elseif ($LatestYtDlp) {
+        Write-Host "   ✅ yt-dlp is up to date ($LocalYtDlp)."
+    }
+} else {
+    Write-Host "   ⬇️ Downloading yt-dlp (not found)..."
+    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+}
+
+# 2. FFmpeg & FFprobe
 $FfmpegPath = "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe"
 $FfprobePath = "src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe"
 $Archive = "ffmpeg-win.zip"
 $TempDir = "ffmpeg-temp"
+$NeedDownload = $false
 
-if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
-    $NeedDownload = $false
+if ((Test-Path $FfmpegPath) -and (Test-Path $FfprobePath) -and (Get-Item $FfmpegPath).Length -gt 0) {
+    Write-Host "   🔍 Checking FFmpeg version..."
+    $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+    $LatestDate = $null
+    try {
+        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" -TimeoutSec 15
+        if ($json.name -match "Latest Auto-Build \((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)") {
+            $LatestDate = $matches[1]
+        }
+    } catch {
+        Write-Host "   ⚠️ Could not check for updates. Using existing version."
+    }
+
+    if ($LatestDate -and $LatestDate -gt $LocalDate) {
+        Write-Host "   ⚠️ FFmpeg is out of date (local: $LocalDate, latest: $LatestDate)." -ForegroundColor Yellow
+        $response = Read-Host "   Do you want to update FFmpeg & FFprobe? (y/n)"
+        if ($response -match "^[Yy]") {
+            $NeedDownload = $true
+        } else {
+            Write-Host "   ⏭️ Skipping update."
+        }
+    } elseif ($LatestDate) {
+        Write-Host "   ✅ FFmpeg is up to date ($LocalDate)."
+    }
+} else {
+    Write-Host "   ⬇️ Downloading FFmpeg (not found)..."
+    $NeedDownload = $true
+}
+
+if ($NeedDownload) {
     if (Test-Path $Archive) {
         try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -53,11 +107,10 @@ if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
         } catch {
             Write-Host "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..." -ForegroundColor Yellow
             Remove-Item -Force $Archive
-            $NeedDownload = $true
         }
-    } else { $NeedDownload = $true }
+    }
 
-    if ($NeedDownload) {
+    if (-not (Test-Path $Archive)) {
         Write-Host "   ⬇️ Downloading FFmpeg (this may take a minute)..."
         curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $Archive "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     }
@@ -71,7 +124,7 @@ if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
     
     Remove-Item -Recurse -Force $TempDir
     Remove-Item -Force $Archive
-} else { Write-Host "   ✅ FFmpeg and FFprobe already exist." }
+}
 
 # --- STAGE 3: BUILD ---
 if (-not (Test-Path "node_modules")) {

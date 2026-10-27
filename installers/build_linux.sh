@@ -42,36 +42,80 @@ if [ -f "rust-toolchain.toml" ]; then
     rm -f rust-toolchain.toml
 fi
 
-# --- STAGE 3: SIDECAR BINARIES (FOOLPROOF) ---
+# --- STAGE 3: SIDECAR BINARIES (WITH VERSION CHECK) ---
 echo "🎵 Fetching sidecar binaries..."
 mkdir -p src-tauri/binaries
 
+# 1. yt-dlp
 YTDLP_PATH="src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu"
-if [ ! -s "$YTDLP_PATH" ]; then
-    echo "   ⬇️ Downloading yt-dlp..."
+if [ -s "$YTDLP_PATH" ]; then
+    echo "   🔍 Checking yt-dlp version..."
+    LOCAL_YTDLP=$("$YTDLP_PATH" --version 2>/dev/null || echo "0")
+    LATEST_YTDLP=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    
+    if [ -z "$LATEST_YTDLP" ]; then
+        echo "   ⚠️ Could not check for updates (offline?). Using existing version."
+    elif [ "$LOCAL_YTDLP" != "$LATEST_YTDLP" ]; then
+        echo "   ⚠️  yt-dlp is out of date (local: $LOCAL_YTDLP, latest: $LATEST_YTDLP)."
+        read -p "   Do you want to update it? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "   ⬇️ Downloading yt-dlp..."
+            curl -f -L --retry 10 --retry-delay 3 -C - -o "$YTDLP_PATH" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+            chmod +x "$YTDLP_PATH"
+        else
+            echo "   ⏭️ Skipping update."
+        fi
+    else
+        echo "   ✅ yt-dlp is up to date ($LOCAL_YTDLP)."
+    fi
+else
+    echo "   ⬇️ Downloading yt-dlp (not found)..."
     curl -f -L --retry 10 --retry-delay 3 -C - -o "$YTDLP_PATH" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
     chmod +x "$YTDLP_PATH"
-else
-    echo "   ✅ yt-dlp already exists."
 fi
 
+# 2. FFmpeg & FFprobe
 FFMPEG_PATH="src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu"
 FFPROBE_PATH="src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu"
 ARCHIVE="ffmpeg-linux.tar.xz"
 
-if [ ! -s "$FFMPEG_PATH" ] || [ ! -s "$FFPROBE_PATH" ]; then
-    NEED_DOWNLOAD=0
+if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
+    echo "   🔍 Checking FFmpeg version..."
+    LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
+    LATEST_FFMPEG_DATE=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" 2>/dev/null | grep -o '"name": "Latest Auto-Build ([^)]*)"' | sed -E 's/.*\(([^)]*)\).*/\1/')
+    
+    if [ -z "$LATEST_FFMPEG_DATE" ] || [ "$LOCAL_FFMPEG_DATE" = "unknown" ]; then
+        echo "   ⚠️ Could not check for updates. Using existing version."
+    elif [[ "$LATEST_FFMPEG_DATE" > "$LOCAL_FFMPEG_DATE" ]]; then
+        echo "   ⚠️  FFmpeg is out of date (local: $LOCAL_FFMPEG_DATE, latest: $LATEST_FFMPEG_DATE)."
+        read -p "   Do you want to update FFmpeg & FFprobe? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            NEED_DOWNLOAD=1
+        else
+            echo "   ⏭️ Skipping update."
+            NEED_DOWNLOAD=0
+        fi
+    else
+        echo "   ✅ FFmpeg is up to date ($LOCAL_FFMPEG_DATE)."
+        NEED_DOWNLOAD=0
+    fi
+else
+    echo "   ⬇️ Downloading FFmpeg (not found)..."
+    NEED_DOWNLOAD=1
+fi
+
+if [ "$NEED_DOWNLOAD" -eq 1 ]; then
+    # Check if archive exists and is a valid tar.xz
     if [ -f "$ARCHIVE" ]; then
         if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
             echo "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..."
             rm -f "$ARCHIVE"
-            NEED_DOWNLOAD=1
         fi
-    else
-        NEED_DOWNLOAD=1
     fi
 
-    if [ "$NEED_DOWNLOAD" -eq 1 ]; then
+    if [ ! -f "$ARCHIVE" ]; then
         echo "   ⬇️ Downloading FFmpeg (this may take a minute)..."
         curl -f -L --retry 10 --retry-delay 3 -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
     fi
@@ -85,8 +129,6 @@ if [ ! -s "$FFMPEG_PATH" ] || [ ! -s "$FFPROBE_PATH" ]; then
     chmod +x "$FFMPEG_PATH" "$FFPROBE_PATH"
     
     rm -rf "$ARCHIVE" "ffmpeg-master-latest-linux64-gpl"
-else
-    echo "   ✅ FFmpeg and FFprobe already exist."
 fi
 
 # --- STAGE 4: BUILD ---

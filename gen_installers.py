@@ -55,36 +55,80 @@ if [ -f "rust-toolchain.toml" ]; then
     rm -f rust-toolchain.toml
 fi
 
-# --- STAGE 3: SIDECAR BINARIES (FOOLPROOF) ---
+# --- STAGE 3: SIDECAR BINARIES (WITH VERSION CHECK) ---
 echo "🎵 Fetching sidecar binaries..."
 mkdir -p src-tauri/binaries
 
+# 1. yt-dlp
 YTDLP_PATH="src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu"
-if [ ! -s "$YTDLP_PATH" ]; then
-    echo "   ⬇️ Downloading yt-dlp..."
+if [ -s "$YTDLP_PATH" ]; then
+    echo "   🔍 Checking yt-dlp version..."
+    LOCAL_YTDLP=$("$YTDLP_PATH" --version 2>/dev/null || echo "0")
+    LATEST_YTDLP=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    
+    if [ -z "$LATEST_YTDLP" ]; then
+        echo "   ⚠️ Could not check for updates (offline?). Using existing version."
+    elif [ "$LOCAL_YTDLP" != "$LATEST_YTDLP" ]; then
+        echo "   ⚠️  yt-dlp is out of date (local: $LOCAL_YTDLP, latest: $LATEST_YTDLP)."
+        read -p "   Do you want to update it? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "   ⬇️ Downloading yt-dlp..."
+            curl -f -L --retry 10 --retry-delay 3 -C - -o "$YTDLP_PATH" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+            chmod +x "$YTDLP_PATH"
+        else
+            echo "   ⏭️ Skipping update."
+        fi
+    else
+        echo "   ✅ yt-dlp is up to date ($LOCAL_YTDLP)."
+    fi
+else
+    echo "   ⬇️ Downloading yt-dlp (not found)..."
     curl -f -L --retry 10 --retry-delay 3 -C - -o "$YTDLP_PATH" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
     chmod +x "$YTDLP_PATH"
-else
-    echo "   ✅ yt-dlp already exists."
 fi
 
+# 2. FFmpeg & FFprobe
 FFMPEG_PATH="src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu"
 FFPROBE_PATH="src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu"
 ARCHIVE="ffmpeg-linux.tar.xz"
 
-if [ ! -s "$FFMPEG_PATH" ] || [ ! -s "$FFPROBE_PATH" ]; then
-    NEED_DOWNLOAD=0
+if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
+    echo "   🔍 Checking FFmpeg version..."
+    LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
+    LATEST_FFMPEG_DATE=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" 2>/dev/null | grep -o '"name": "Latest Auto-Build ([^)]*)"' | sed -E 's/.*\(([^)]*)\).*/\1/')
+    
+    if [ -z "$LATEST_FFMPEG_DATE" ] || [ "$LOCAL_FFMPEG_DATE" = "unknown" ]; then
+        echo "   ⚠️ Could not check for updates. Using existing version."
+    elif [[ "$LATEST_FFMPEG_DATE" > "$LOCAL_FFMPEG_DATE" ]]; then
+        echo "   ⚠️  FFmpeg is out of date (local: $LOCAL_FFMPEG_DATE, latest: $LATEST_FFMPEG_DATE)."
+        read -p "   Do you want to update FFmpeg & FFprobe? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            NEED_DOWNLOAD=1
+        else
+            echo "   ⏭️ Skipping update."
+            NEED_DOWNLOAD=0
+        fi
+    else
+        echo "   ✅ FFmpeg is up to date ($LOCAL_FFMPEG_DATE)."
+        NEED_DOWNLOAD=0
+    fi
+else
+    echo "   ⬇️ Downloading FFmpeg (not found)..."
+    NEED_DOWNLOAD=1
+fi
+
+if [ "$NEED_DOWNLOAD" -eq 1 ]; then
+    # Check if archive exists and is a valid tar.xz
     if [ -f "$ARCHIVE" ]; then
         if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
             echo "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..."
             rm -f "$ARCHIVE"
-            NEED_DOWNLOAD=1
         fi
-    else
-        NEED_DOWNLOAD=1
     fi
 
-    if [ "$NEED_DOWNLOAD" -eq 1 ]; then
+    if [ ! -f "$ARCHIVE" ]; then
         echo "   ⬇️ Downloading FFmpeg (this may take a minute)..."
         curl -f -L --retry 10 --retry-delay 3 -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
     fi
@@ -98,8 +142,6 @@ if [ ! -s "$FFMPEG_PATH" ] || [ ! -s "$FFPROBE_PATH" ]; then
     chmod +x "$FFMPEG_PATH" "$FFPROBE_PATH"
     
     rm -rf "$ARCHIVE" "ffmpeg-master-latest-linux64-gpl"
-else
-    echo "   ✅ FFmpeg and FFprobe already exist."
 fi
 
 # --- STAGE 4: BUILD ---
@@ -155,23 +197,77 @@ if (Test-Path ".git") {
     git pull
 }
 
-# --- STAGE 2: SIDECAR BINARIES (FOOLPROOF) ---
+# --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
 Write-Host "🎵 Fetching sidecar binaries..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 
+# 1. yt-dlp
 $YtDlpPath = "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
-if (-not (Test-Path $YtDlpPath) -or (Get-Item $YtDlpPath).Length -eq 0) {
-    Write-Host "   ⬇️ Downloading yt-dlp..."
-    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-} else { Write-Host "   ✅ yt-dlp already exists." }
+if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
+    Write-Host "   🔍 Checking yt-dlp version..."
+    $LocalYtDlp = & $YtDlpPath --version 2>$null
+    $LatestYtDlp = $null
+    try {
+        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -TimeoutSec 15
+        $LatestYtDlp = $json.tag_name
+    } catch {
+        Write-Host "   ⚠️ Could not check for updates (offline?). Using existing version."
+    }
 
+    if ($LatestYtDlp -and $LocalYtDlp -ne $LatestYtDlp) {
+        Write-Host "   ⚠️ yt-dlp is out of date (local: $LocalYtDlp, latest: $LatestYtDlp)." -ForegroundColor Yellow
+        $response = Read-Host "   Do you want to update it? (y/n)"
+        if ($response -match "^[Yy]") {
+            Write-Host "   ⬇️ Downloading yt-dlp..."
+            curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        } else {
+            Write-Host "   ⏭️ Skipping update."
+        }
+    } elseif ($LatestYtDlp) {
+        Write-Host "   ✅ yt-dlp is up to date ($LocalYtDlp)."
+    }
+} else {
+    Write-Host "   ⬇️ Downloading yt-dlp (not found)..."
+    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $YtDlpPath "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+}
+
+# 2. FFmpeg & FFprobe
 $FfmpegPath = "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe"
 $FfprobePath = "src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe"
 $Archive = "ffmpeg-win.zip"
 $TempDir = "ffmpeg-temp"
+$NeedDownload = $false
 
-if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
-    $NeedDownload = $false
+if ((Test-Path $FfmpegPath) -and (Test-Path $FfprobePath) -and (Get-Item $FfmpegPath).Length -gt 0) {
+    Write-Host "   🔍 Checking FFmpeg version..."
+    $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+    $LatestDate = $null
+    try {
+        $json = Invoke-RestMethod -Uri "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" -TimeoutSec 15
+        if ($json.name -match "Latest Auto-Build \((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)") {
+            $LatestDate = $matches[1]
+        }
+    } catch {
+        Write-Host "   ⚠️ Could not check for updates. Using existing version."
+    }
+
+    if ($LatestDate -and $LatestDate -gt $LocalDate) {
+        Write-Host "   ⚠️ FFmpeg is out of date (local: $LocalDate, latest: $LatestDate)." -ForegroundColor Yellow
+        $response = Read-Host "   Do you want to update FFmpeg & FFprobe? (y/n)"
+        if ($response -match "^[Yy]") {
+            $NeedDownload = $true
+        } else {
+            Write-Host "   ⏭️ Skipping update."
+        }
+    } elseif ($LatestDate) {
+        Write-Host "   ✅ FFmpeg is up to date ($LocalDate)."
+    }
+} else {
+    Write-Host "   ⬇️ Downloading FFmpeg (not found)..."
+    $NeedDownload = $true
+}
+
+if ($NeedDownload) {
     if (Test-Path $Archive) {
         try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -179,11 +275,10 @@ if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
         } catch {
             Write-Host "   ⚠️ Existing FFmpeg archive is corrupt. Deleting and restarting..." -ForegroundColor Yellow
             Remove-Item -Force $Archive
-            $NeedDownload = $true
         }
-    } else { $NeedDownload = $true }
+    }
 
-    if ($NeedDownload) {
+    if (-not (Test-Path $Archive)) {
         Write-Host "   ⬇️ Downloading FFmpeg (this may take a minute)..."
         curl.exe -f -L --retry 10 --retry-delay 3 -C - -o $Archive "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     }
@@ -197,7 +292,7 @@ if (-not (Test-Path $FfmpegPath) -or -not (Test-Path $FfprobePath)) {
     
     Remove-Item -Recurse -Force $TempDir
     Remove-Item -Force $Archive
-} else { Write-Host "   ✅ FFmpeg and FFprobe already exist." }
+}
 
 # --- STAGE 3: BUILD ---
 if (-not (Test-Path "node_modules")) {
@@ -266,36 +361,75 @@ if exist ".git" (
     git pull
 )
 
-:: --- STAGE 2: SIDECAR BINARIES (FOOLPROOF) ---
+:: --- STAGE 2: SIDECAR BINARIES (WITH VERSION CHECK) ---
 echo Fetching sidecar binaries...
 if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 
+:: 1. yt-dlp
 set YTDLP_PATH=src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe
-if not exist "%YTDLP_PATH%" (
-    echo    Downloading yt-dlp...
-    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-) else ( echo    yt-dlp already exists. )
+set NEED_YTDLP_UPDATE=0
 
+if exist "%YTDLP_PATH%" (
+    echo    Checking yt-dlp version...
+    for /f "delims=" %%v in ('"%YTDLP_PATH%" --version 2^>nul') do set LOCAL_YTDLP=%%v
+    
+    :: Fetch latest tag using curl and PowerShell to parse JSON
+    for /f "delims=" %%v in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest' -TimeoutSec 10).tag_name" 2^>nul') do set LATEST_YTDLP=%%v
+
+    if "!LOCAL_YTDLP!" neq "!LATEST_YTDLP!" (
+        echo    yt-dlp is out of date ^(local: !LOCAL_YTDLP!, latest: !LATEST_YTDLP!^).
+        set /p UPDATE_YTDLP="   Do you want to update it? (y/n) "
+        if /i "!UPDATE_YTDLP!"=="y" set NEED_YTDLP_UPDATE=1
+    ) else (
+        echo    yt-dlp is up to date ^(!LOCAL_YTDLP!^).
+    )
+) else (
+    echo    Downloading yt-dlp ^(not found^)...
+    set NEED_YTDLP_UPDATE=1
+)
+
+if !NEED_YTDLP_UPDATE! equ 1 (
+    curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%YTDLP_PATH%" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+)
+
+:: 2. FFmpeg & FFprobe
 set FFMPEG_PATH=src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe
 set FFPROBE_PATH=src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe
 set ARCHIVE=ffmpeg-win.zip
 set TEMP_DIR=ffmpeg-temp
+set NEED_FFMPEG_UPDATE=0
 
-if not exist "%FFMPEG_PATH%" (
-    set NEED_DOWNLOAD=0
+if exist "%FFMPEG_PATH%" (
+    echo    Checking FFmpeg version...
+    :: Get local file date in YYYY-MM-DD HH:MM
+    for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd HH:mm')" 2^>nul') do set LOCAL_DATE=%%d
+    
+    :: Get latest date from BtbN release name
+    for /f "delims=" %%d in ('powershell -Command "(Invoke-RestMethod -Uri 'https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest' -TimeoutSec 10).name -replace '.*\((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\).*','$1'" 2^>nul') do set LATEST_DATE=%%d
+
+    if "!LATEST_DATE!" gtr "!LOCAL_DATE!" (
+        echo    FFmpeg is out of date ^(local: !LOCAL_DATE!, latest: !LATEST_DATE!^).
+        set /p UPDATE_FFMPEG="   Do you want to update FFmpeg & FFprobe? (y/n) "
+        if /i "!UPDATE_FFMPEG!"=="y" set NEED_FFMPEG_UPDATE=1
+    ) else (
+        echo    FFmpeg is up to date ^(!LOCAL_DATE!^).
+    )
+) else (
+    echo    Downloading FFmpeg ^(not found^)...
+    set NEED_FFMPEG_UPDATE=1
+)
+
+if !NEED_FFMPEG_UPDATE! equ 1 (
     if exist "%ARCHIVE%" (
         powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path '%ARCHIVE%')).Dispose(); exit 0 } catch { exit 1 }"
         if !errorlevel! neq 0 (
             echo    Existing FFmpeg archive is corrupt. Deleting...
             del /F /Q "%ARCHIVE%"
-            set NEED_DOWNLOAD=1
         )
-    ) else (
-        set NEED_DOWNLOAD=1
     )
 
-    if !NEED_DOWNLOAD! equ 1 (
-        echo    Downloading FFmpeg (this may take a minute)...
+    if not exist "%ARCHIVE%" (
+        echo    Downloading FFmpeg ^(this may take a minute^)...
         curl.exe -f -L --retry 10 --retry-delay 3 -C - -o "%ARCHIVE%" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     )
 
@@ -308,7 +442,7 @@ if not exist "%FFMPEG_PATH%" (
     
     rmdir /S /Q "%TEMP_DIR%"
     del /F /Q "%ARCHIVE%"
-) else ( echo    FFmpeg and FFprobe already exist. )
+)
 
 :: --- STAGE 3: BUILD ---
 if not exist "node_modules" (
