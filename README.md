@@ -113,6 +113,9 @@ For the fastest way to build from source, you can use our automated build script
 
 If the download or build fails halfway, **simply run the command again** — the scripts are designed to resume from where they left off.
 
+### NOTE:
+As the installation script is running create the .env file and fill it with the correct details so the app may build properly
+
 **Windows (PowerShell)**
 ```powershell
 iwr -useb https://raw.githubusercontent.com/d3khan/spotify_downloader/main/installers/build_windows.ps1 | iex
