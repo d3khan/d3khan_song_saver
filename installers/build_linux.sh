@@ -42,7 +42,7 @@ if [ -f "rust-toolchain.toml" ]; then
     rm -f rust-toolchain.toml
 fi
 
-# --- STAGE 3: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
+# --- STAGE 3: SIDECAR BINARIES (ROBUST VERSION CHECK) ---
 echo "🎵 Fetching sidecar binaries..."
 mkdir -p src-tauri/binaries
 
@@ -51,8 +51,7 @@ YTDLP_PATH="src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu"
 if [ -s "$YTDLP_PATH" ]; then
     echo "   🔍 Checking yt-dlp version..."
     LOCAL_YTDLP=$("$YTDLP_PATH" --version 2>/dev/null || echo "0")
-    # Uses HEAD request to get the redirect URL, bypassing API rate limits
-    LATEST_YTDLP=$(curl -sI "https://github.com/yt-dlp/yt-dlp/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
+    LATEST_YTDLP=$(curl -sL "https://github.com/yt-dlp/yt-dlp/releases/latest" | grep -o 'tag/[^"]*' | head -n 1 | sed 's/tag\///')
     
     if [ -z "$LATEST_YTDLP" ]; then
         echo "   ⚠️ Could not check for updates (offline?). Using existing version."
@@ -84,14 +83,14 @@ NEED_DOWNLOAD=0
 
 if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
     echo "   🔍 Checking FFmpeg version..."
-    # Uses HEAD request to get the BtbN tag (e.g., autobuild-2026-10-26-14-05)
-    LATEST_FFMPEG_TAG=$(curl -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
+    # Scrapes the HTML for the autobuild date (e.g., autobuild-2026-10-26)
+    LATEST_FFMPEG_DATE=$(curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/latest" | grep -o 'autobuild-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head -n 1 | sed 's/autobuild-//')
     LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d" 2>/dev/null)
     
-    if [ -z "$LATEST_FFMPEG_TAG" ] || [ -z "$LOCAL_FFMPEG_DATE" ]; then
+    if [ -z "$LATEST_FFMPEG_DATE" ] || [ -z "$LOCAL_FFMPEG_DATE" ]; then
         echo "   ⚠️ Could not check for updates. Using existing version."
-    elif [[ "$LATEST_FFMPEG_TAG" > *"$LOCAL_FFMPEG_DATE"* ]]; then
-        echo "   ⚠️  FFmpeg is out of date (local build: $LOCAL_FFMPEG_DATE, latest build: $LATEST_FFMPEG_TAG)."
+    elif [[ "$LATEST_FFMPEG_DATE" > "$LOCAL_FFMPEG_DATE" ]]; then
+        echo "   ⚠️  FFmpeg is out of date (local: $LOCAL_FFMPEG_DATE, latest: $LATEST_FFMPEG_DATE)."
         read -p "   Do you want to update FFmpeg & FFprobe? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -100,7 +99,7 @@ if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
             echo "   ⏭️ Skipping update."
         fi
     else
-        echo "   ✅ FFmpeg is up to date."
+        echo "   ✅ FFmpeg is up to date ($LOCAL_FFMPEG_DATE)."
     fi
 else
     echo "   ⬇️ Downloading FFmpeg (not found)..."

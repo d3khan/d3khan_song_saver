@@ -55,7 +55,7 @@ if [ -f "rust-toolchain.toml" ]; then
     rm -f rust-toolchain.toml
 fi
 
-# --- STAGE 3: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
+# --- STAGE 3: SIDECAR BINARIES (ROBUST VERSION CHECK) ---
 echo "🎵 Fetching sidecar binaries..."
 mkdir -p src-tauri/binaries
 
@@ -64,8 +64,7 @@ YTDLP_PATH="src-tauri/binaries/yt-dlp-x86_64-unknown-linux-gnu"
 if [ -s "$YTDLP_PATH" ]; then
     echo "   🔍 Checking yt-dlp version..."
     LOCAL_YTDLP=$("$YTDLP_PATH" --version 2>/dev/null || echo "0")
-    # Uses HEAD request to get the redirect URL, bypassing API rate limits
-    LATEST_YTDLP=$(curl -sI "https://github.com/yt-dlp/yt-dlp/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
+    LATEST_YTDLP=$(curl -sL "https://github.com/yt-dlp/yt-dlp/releases/latest" | grep -o 'tag/[^"]*' | head -n 1 | sed 's/tag\///')
     
     if [ -z "$LATEST_YTDLP" ]; then
         echo "   ⚠️ Could not check for updates (offline?). Using existing version."
@@ -97,14 +96,14 @@ NEED_DOWNLOAD=0
 
 if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
     echo "   🔍 Checking FFmpeg version..."
-    # Uses HEAD request to get the BtbN tag (e.g., autobuild-2026-10-26-14-05)
-    LATEST_FFMPEG_TAG=$(curl -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest" | grep -i '^location:' | sed -E 's/.*\/tag\/([^ ]+).*/\1/' | tr -d '\r')
+    # Scrapes the HTML for the autobuild date (e.g., autobuild-2026-10-26)
+    LATEST_FFMPEG_DATE=$(curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/latest" | grep -o 'autobuild-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head -n 1 | sed 's/autobuild-//')
     LOCAL_FFMPEG_DATE=$(date -r "$FFMPEG_PATH" +"%Y-%m-%d" 2>/dev/null)
     
-    if [ -z "$LATEST_FFMPEG_TAG" ] || [ -z "$LOCAL_FFMPEG_DATE" ]; then
+    if [ -z "$LATEST_FFMPEG_DATE" ] || [ -z "$LOCAL_FFMPEG_DATE" ]; then
         echo "   ⚠️ Could not check for updates. Using existing version."
-    elif [[ "$LATEST_FFMPEG_TAG" > *"$LOCAL_FFMPEG_DATE"* ]]; then
-        echo "   ⚠️  FFmpeg is out of date (local build: $LOCAL_FFMPEG_DATE, latest build: $LATEST_FFMPEG_TAG)."
+    elif [[ "$LATEST_FFMPEG_DATE" > "$LOCAL_FFMPEG_DATE" ]]; then
+        echo "   ⚠️  FFmpeg is out of date (local: $LOCAL_FFMPEG_DATE, latest: $LATEST_FFMPEG_DATE)."
         read -p "   Do you want to update FFmpeg & FFprobe? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -113,7 +112,7 @@ if [ -s "$FFMPEG_PATH" ] && [ -s "$FFPROBE_PATH" ]; then
             echo "   ⏭️ Skipping update."
         fi
     else
-        echo "   ✅ FFmpeg is up to date."
+        echo "   ✅ FFmpeg is up to date ($LOCAL_FFMPEG_DATE)."
     fi
 else
     echo "   ⬇️ Downloading FFmpeg (not found)..."
@@ -181,7 +180,7 @@ elseif ((Test-Path "$RepoName\src-tauri") -and (Test-Path "$RepoName\package.jso
 if (-not $InsideRepo) { Write-Host "   📥 Repository not found. Cloning..." -ForegroundColor Yellow; git clone https://github.com/d3khan/spotify_downloader.git; Set-Location $RepoName }
 if (Test-Path ".git") { Write-Host "🔄 Pulling latest changes from Git..." -ForegroundColor Cyan; git pull }
 
-# --- STAGE 2: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
+# --- STAGE 2: SIDECAR BINARIES (ROBUST VERSION CHECK) ---
 Write-Host "🎵 Fetching sidecar binaries..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 
@@ -192,10 +191,8 @@ if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
     $LocalYtDlp = & $YtDlpPath --version 2>$null
     $LatestYtDlp = $null
     try {
-        # Uses HEAD request via curl to avoid API rate limits
-        $headers = curl.exe -sI "https://github.com/yt-dlp/yt-dlp/releases/latest"
-        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
-        if ($loc -match "/tag/([^\s]+)") { $LatestYtDlp = $matches[1].Trim() }
+        $html = (Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest" -UseBasicParsing).Content
+        if ($html -match 'tag/([0-9]{4}\.[0-9]{2}\.[0-9]{2})') { $LatestYtDlp = $matches[1] }
     } catch {}
 
     if ($LatestYtDlp -and $LocalYtDlp -ne $LatestYtDlp) {
@@ -221,19 +218,18 @@ $NeedDownload = $false
 if ((Test-Path $FfmpegPath) -and (Test-Path $FfprobePath) -and (Get-Item $FfmpegPath).Length -gt 0) {
     Write-Host "   🔍 Checking FFmpeg version..."
     $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd")
-    $LatestTag = $null
+    $LatestDate = $null
     try {
-        $headers = curl.exe -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest"
-        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
-        if ($loc -match "/tag/([^\s]+)") { $LatestTag = $matches[1].Trim() }
+        $html = (Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest" -UseBasicParsing).Content
+        if ($html -match 'autobuild-(\d{4}-\d{2}-\d{2})') { $LatestDate = $matches[1] }
     } catch {}
 
-    if ($LatestTag -and $LatestTag -match $LocalDate) {
-        Write-Host "   ✅ FFmpeg is up to date." -ForegroundColor Green
-    } elseif ($LatestTag) {
-        Write-Host "   ⚠️ FFmpeg is out of date (local build: $LocalDate, latest build: $LatestTag)." -ForegroundColor Yellow
+    if ($LatestDate -and $LatestDate -gt $LocalDate) {
+        Write-Host "   ⚠️ FFmpeg is out of date (local: $LocalDate, latest: $LatestDate)." -ForegroundColor Yellow
         $response = Read-Host "   Do you want to update FFmpeg & FFprobe? (y/n)"
         if ($response -match "^[Yy]") { $NeedDownload = $true } else { Write-Host "   ⏭️ Skipping update." }
+    } elseif ($LatestDate) {
+        Write-Host "   ✅ FFmpeg is up to date ($LocalDate)." -ForegroundColor Green
     }
 } else {
     Write-Host "   ⬇️ Downloading FFmpeg (not found)..."
@@ -303,7 +299,7 @@ set NEED_YTDLP_UPDATE=0
 if exist "%YTDLP_PATH%" (
     echo    Checking yt-dlp version...
     for /f "delims=" %%v in ('"%YTDLP_PATH%" --version 2^>nul') do set LOCAL_YTDLP=%%v
-    for /f "delims=" %%v in ('powershell -Command "(curl.exe -sI 'https://github.com/yt-dlp/yt-dlp/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_YTDLP=%%v
+    for /f "delims=" %%v in ('powershell -Command "$h=(Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest' -UseBasicParsing).Content; if ($h -match 'tag/([0-9]+\.[0-9]+\.[0-9]+)') { $matches[1] }" 2^>nul') do set LATEST_YTDLP=%%v
     if "!LOCAL_YTDLP!" neq "!LATEST_YTDLP!" (
         echo    yt-dlp is out of date ^(local: !LOCAL_YTDLP!, latest: !LATEST_YTDLP!^).
         set /p UPDATE_YTDLP="   Do you want to update it? (y/n) "
@@ -321,10 +317,9 @@ set NEED_FFMPEG_UPDATE=0
 if exist "%FFMPEG_PATH%" (
     echo    Checking FFmpeg version...
     for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd')" 2^>nul') do set LOCAL_DATE=%%d
-    for /f "delims=" %%d in ('powershell -Command "(curl.exe -sI 'https://github.com/BtbN/FFmpeg-Builds/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_TAG=%%d
-    echo !LATEST_TAG! | findstr /C:"!LOCAL_DATE!" >nul
-    if !errorlevel! neq 0 (
-        echo    FFmpeg is out of date ^(local build: !LOCAL_DATE!, latest build: !LATEST_TAG!^).
+    for /f "delims=" %%d in ('powershell -Command "$h=(Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/latest' -UseBasicParsing).Content; if ($h -match 'autobuild-([0-9]{4}-[0-9]{2}-[0-9]{2})') { $matches[1] }" 2^>nul') do set LATEST_DATE=%%d
+    if "!LATEST_DATE!" gtr "!LOCAL_DATE!" (
+        echo    FFmpeg is out of date ^(local: !LOCAL_DATE!, latest: !LATEST_DATE!^).
         set /p UPDATE_FFMPEG="   Do you want to update FFmpeg & FFprobe? (y/n) "
         if /i "!UPDATE_FFMPEG!"=="y" set NEED_FFMPEG_UPDATE=1
     ) else ( echo    FFmpeg is up to date. )

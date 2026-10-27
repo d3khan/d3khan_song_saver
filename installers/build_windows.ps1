@@ -13,7 +13,7 @@ elseif ((Test-Path "$RepoName\src-tauri") -and (Test-Path "$RepoName\package.jso
 if (-not $InsideRepo) { Write-Host "   📥 Repository not found. Cloning..." -ForegroundColor Yellow; git clone https://github.com/d3khan/spotify_downloader.git; Set-Location $RepoName }
 if (Test-Path ".git") { Write-Host "🔄 Pulling latest changes from Git..." -ForegroundColor Cyan; git pull }
 
-# --- STAGE 2: SIDECAR BINARIES (API-FREE VERSION CHECK) ---
+# --- STAGE 2: SIDECAR BINARIES (ROBUST VERSION CHECK) ---
 Write-Host "🎵 Fetching sidecar binaries..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 
@@ -24,10 +24,8 @@ if ((Test-Path $YtDlpPath) -and (Get-Item $YtDlpPath).Length -gt 0) {
     $LocalYtDlp = & $YtDlpPath --version 2>$null
     $LatestYtDlp = $null
     try {
-        # Uses HEAD request via curl to avoid API rate limits
-        $headers = curl.exe -sI "https://github.com/yt-dlp/yt-dlp/releases/latest"
-        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
-        if ($loc -match "/tag/([^\s]+)") { $LatestYtDlp = $matches[1].Trim() }
+        $html = (Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest" -UseBasicParsing).Content
+        if ($html -match 'tag/([0-9]{4}\.[0-9]{2}\.[0-9]{2})') { $LatestYtDlp = $matches[1] }
     } catch {}
 
     if ($LatestYtDlp -and $LocalYtDlp -ne $LatestYtDlp) {
@@ -53,19 +51,18 @@ $NeedDownload = $false
 if ((Test-Path $FfmpegPath) -and (Test-Path $FfprobePath) -and (Get-Item $FfmpegPath).Length -gt 0) {
     Write-Host "   🔍 Checking FFmpeg version..."
     $LocalDate = (Get-Item $FfmpegPath).LastWriteTime.ToString("yyyy-MM-dd")
-    $LatestTag = $null
+    $LatestDate = $null
     try {
-        $headers = curl.exe -sI "https://github.com/BtbN/FFmpeg-Builds/releases/latest"
-        $loc = $headers | Select-String -Pattern "location:" | ForEach-Object { $_.Line }
-        if ($loc -match "/tag/([^\s]+)") { $LatestTag = $matches[1].Trim() }
+        $html = (Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest" -UseBasicParsing).Content
+        if ($html -match 'autobuild-(\d{4}-\d{2}-\d{2})') { $LatestDate = $matches[1] }
     } catch {}
 
-    if ($LatestTag -and $LatestTag -match $LocalDate) {
-        Write-Host "   ✅ FFmpeg is up to date." -ForegroundColor Green
-    } elseif ($LatestTag) {
-        Write-Host "   ⚠️ FFmpeg is out of date (local build: $LocalDate, latest build: $LatestTag)." -ForegroundColor Yellow
+    if ($LatestDate -and $LatestDate -gt $LocalDate) {
+        Write-Host "   ⚠️ FFmpeg is out of date (local: $LocalDate, latest: $LatestDate)." -ForegroundColor Yellow
         $response = Read-Host "   Do you want to update FFmpeg & FFprobe? (y/n)"
         if ($response -match "^[Yy]") { $NeedDownload = $true } else { Write-Host "   ⏭️ Skipping update." }
+    } elseif ($LatestDate) {
+        Write-Host "   ✅ FFmpeg is up to date ($LocalDate)." -ForegroundColor Green
     }
 } else {
     Write-Host "   ⬇️ Downloading FFmpeg (not found)..."

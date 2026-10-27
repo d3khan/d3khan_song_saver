@@ -25,7 +25,7 @@ set NEED_YTDLP_UPDATE=0
 if exist "%YTDLP_PATH%" (
     echo    Checking yt-dlp version...
     for /f "delims=" %%v in ('"%YTDLP_PATH%" --version 2^>nul') do set LOCAL_YTDLP=%%v
-    for /f "delims=" %%v in ('powershell -Command "(curl.exe -sI 'https://github.com/yt-dlp/yt-dlp/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_YTDLP=%%v
+    for /f "delims=" %%v in ('powershell -Command "$h=(Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest' -UseBasicParsing).Content; if ($h -match 'tag/([0-9]+\.[0-9]+\.[0-9]+)') { $matches[1] }" 2^>nul') do set LATEST_YTDLP=%%v
     if "!LOCAL_YTDLP!" neq "!LATEST_YTDLP!" (
         echo    yt-dlp is out of date ^(local: !LOCAL_YTDLP!, latest: !LATEST_YTDLP!^).
         set /p UPDATE_YTDLP="   Do you want to update it? (y/n) "
@@ -43,10 +43,9 @@ set NEED_FFMPEG_UPDATE=0
 if exist "%FFMPEG_PATH%" (
     echo    Checking FFmpeg version...
     for /f "delims=" %%d in ('powershell -Command "(Get-Item '%FFMPEG_PATH%').LastWriteTime.ToString('yyyy-MM-dd')" 2^>nul') do set LOCAL_DATE=%%d
-    for /f "delims=" %%d in ('powershell -Command "(curl.exe -sI 'https://github.com/BtbN/FFmpeg-Builds/releases/latest' | Select-String 'location:').ToString().Split('/tag/')[1].Trim()" 2^>nul') do set LATEST_TAG=%%d
-    echo !LATEST_TAG! | findstr /C:"!LOCAL_DATE!" >nul
-    if !errorlevel! neq 0 (
-        echo    FFmpeg is out of date ^(local build: !LOCAL_DATE!, latest build: !LATEST_TAG!^).
+    for /f "delims=" %%d in ('powershell -Command "$h=(Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/latest' -UseBasicParsing).Content; if ($h -match 'autobuild-([0-9]{4}-[0-9]{2}-[0-9]{2})') { $matches[1] }" 2^>nul') do set LATEST_DATE=%%d
+    if "!LATEST_DATE!" gtr "!LOCAL_DATE!" (
+        echo    FFmpeg is out of date ^(local: !LOCAL_DATE!, latest: !LATEST_DATE!^).
         set /p UPDATE_FFMPEG="   Do you want to update FFmpeg & FFprobe? (y/n) "
         if /i "!UPDATE_FFMPEG!"=="y" set NEED_FFMPEG_UPDATE=1
     ) else ( echo    FFmpeg is up to date. )
