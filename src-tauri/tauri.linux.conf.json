@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "linux": {
+      "deb": {
+        "postInstallScript": "linux/post-install.sh"
+      },
+      "rpm": {
+        "postInstallScript": "linux/post-install.sh"
+      }
+    }
+  }
+}

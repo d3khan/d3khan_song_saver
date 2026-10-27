@@ -2,6 +2,7 @@ use crate::metadata::TrackMeta;
 use lofty::file::AudioFile;
 use lofty::picture::Picture;
 use lofty::tag::Tag;
+use soundcloud_rs::ClientBuilder; // Use ClientBuilder for retries
 use soundcloud_rs::SoundcloudIdentifier;
 use soundcloud_rs::query::TracksQuery;
 use soundcloud_rs::response::StreamType;
@@ -9,13 +10,19 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// Use ClientBuilder to enable automatic retries on 401
 pub async fn soundcloud_client() -> Result<soundcloud_rs::Client, String> {
-    soundcloud_rs::Client::new()
+    ClientBuilder::new()
+        .with_max_retries(3)
+        .with_retry_on_401(true) // Automatically retry on 401 Unauthorized
+        .build()
         .await
         .map_err(|e| format!("SoundCloud client init failed: {e}"))
 }
 
-pub async fn search_soundcloud(query: &str) -> Result<Vec<(String, String, String)>, String> {
+pub async fn search_soundcloud(
+    query: &str,
+) -> Result<Vec<(String, String, String, Option<String>, Option<String>)>, String> {
     let query = query.to_string();
     tauri::async_runtime::spawn_blocking(move || {
         let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -23,7 +30,7 @@ pub async fn search_soundcloud(query: &str) -> Result<Vec<(String, String, Strin
             let client = soundcloud_client().await?;
             let tracks_query = TracksQuery {
                 q: Some(query),
-                limit: Some(20),
+                limit: Some(10),
                 ..Default::default()
             };
             let results = client
@@ -31,7 +38,7 @@ pub async fn search_soundcloud(query: &str) -> Result<Vec<(String, String, Strin
                 .await
                 .map_err(|e| format!("SoundCloud search failed: {e}"))?;
 
-            let mapped: Vec<(String, String, String)> = results
+            let mut mapped: Vec<_> = results
                 .collection
                 .into_iter()
                 .map(|r| {
@@ -42,15 +49,122 @@ pub async fn search_soundcloud(query: &str) -> Result<Vec<(String, String, Strin
                         .as_ref()
                         .and_then(|u| u.username.clone())
                         .unwrap_or_default();
-                    (id, title, artist)
+                    let cover = r.artwork_url;
+                    let year = r
+                        .created_at
+                        .as_ref()
+                        .and_then(|s| s.split('-').next())
+                        .map(|s| s.to_string());
+                    let plays = r.playback_count.unwrap_or(0);
+                    (id, title, artist, cover, year, plays)
                 })
                 .collect();
 
-            Ok(mapped)
+            // Rank by play count (highest first)
+            mapped.sort_by(|a, b| b.5.cmp(&a.5));
+
+            // Map to final tuple without the play count
+            let final_results = mapped
+                .into_iter()
+                .map(|(id, title, artist, cover, year, _)| (id, title, artist, cover, year))
+                .collect();
+
+            Ok(final_results)
         })
     })
     .await
     .map_err(|e| format!("Search task panicked: {e}"))?
+}
+
+pub async fn download_track_hybrid(
+    meta: &TrackMeta,
+    final_path: &Path,
+    cancel: Arc<AtomicBool>,
+) -> Result<u64, String> {
+    // 1. Try YouTube first
+    match download_from_youtube(meta, final_path, cancel.clone()).await {
+        Ok(bytes) => {
+            tag_file(final_path, meta).await?;
+            return Ok(bytes);
+        }
+        Err(e) => {
+            // Log the error but don't crash. We fall back to SoundCloud.
+            eprintln!("YouTube failed, falling back to SoundCloud: {e}");
+        }
+    }
+
+    // 2. Fall back to SoundCloud
+    download_track(meta, final_path, cancel).await
+}
+
+async fn download_from_youtube(
+    meta: &TrackMeta,
+    final_path: &Path,
+    cancel: Arc<AtomicBool>,
+) -> Result<u64, String> {
+    use rusty_ytdl::{
+        Video, VideoOptions, VideoQuality, VideoSearchOptions,
+        search::{SearchOptions, SearchResult, SearchType, YouTube},
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".into());
+    }
+
+    let query = format!("{} - {}", meta.artists.join(", "), meta.title);
+
+    let youtube = YouTube::new().map_err(|e| format!("YT init failed: {e}"))?;
+
+    let search_options = SearchOptions {
+        limit: 1,
+        search_type: SearchType::Video,
+        ..Default::default()
+    };
+
+    let search_results = youtube
+        .search(&query, Some(&search_options))
+        .await
+        .map_err(|e| format!("YT Search failed: {e}"))?;
+
+    let video_url = match search_results.into_iter().next() {
+        Some(SearchResult::Video(v)) => v.url,
+        _ => return Err("No YouTube video found".into()),
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".into());
+    }
+
+    let video_options = VideoOptions {
+        quality: VideoQuality::Lowest,
+        filter: VideoSearchOptions::Audio,
+        ..Default::default()
+    };
+
+    let video = Video::new_with_options(&video_url, video_options)
+        .map_err(|e| format!("YouTube stream init failed: {e}"))?;
+
+    let temp_path = final_path.with_extension("ytdl.tmp");
+
+    // If this fails with "Video source empty", the error is returned and we fall back.
+    video
+        .download(&temp_path)
+        .await
+        .map_err(|e| format!("YouTube download failed: {e}"))?;
+
+    if cancel.load(Ordering::Relaxed) {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err("Cancelled".into());
+    }
+
+    let pcm = decode_audio_file_to_pcm(&temp_path)?;
+    let mp3_bytes = encode_pcm_to_mp3(&pcm)?;
+    tokio::fs::write(final_path, &mp3_bytes)
+        .await
+        .map_err(|e| format!("Write MP3 error: {e}"))?;
+
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    Ok(mp3_bytes.len() as u64)
 }
 
 pub async fn download_track(
@@ -138,21 +252,34 @@ async fn download_raw_bytes(url: &str, cancel: Arc<AtomicBool>) -> Result<Vec<u8
 }
 
 fn decode_aac_to_pcm(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    use symphonia::core::audio::AudioBufferRef;
-    use symphonia::core::audio::Signal;
-    use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-    use symphonia::core::errors::Error as SymphoniaError;
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
-
-    let mss = MediaSourceStream::new(
+    let mss = symphonia::core::io::MediaSourceStream::new(
         Box::new(std::io::Cursor::new(bytes.to_vec())),
         Default::default(),
     );
-    let mut hint = Hint::new();
+    let mut hint = symphonia::core::probe::Hint::new();
     hint.with_extension("aac");
+    decode_stream_to_pcm(mss, hint)
+}
+
+fn decode_audio_file_to_pcm(path: &Path) -> Result<Vec<f32>, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = symphonia::core::probe::Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    decode_stream_to_pcm(mss, hint)
+}
+
+fn decode_stream_to_pcm(
+    mss: symphonia::core::io::MediaSourceStream,
+    hint: symphonia::core::probe::Hint,
+) -> Result<Vec<f32>, String> {
+    use symphonia::core::audio::{AudioBufferRef, Signal};
+    use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::meta::MetadataOptions;
 
     let probed = symphonia::default::get_probe()
         .format(
@@ -201,7 +328,16 @@ fn decode_aac_to_pcm(bytes: &[u8]) -> Result<Vec<f32>, String> {
                     }
                 }
             }
-            _ => return Err("Unsupported audio format from Symphonia".into()),
+            AudioBufferRef::S16(buf) => {
+                let num_channels = buf.spec().channels.count();
+                let num_frames = buf.frames();
+                for frame in 0..num_frames {
+                    for ch in 0..num_channels {
+                        pcm_data.push(buf.chan(ch)[frame] as f32 / 32768.0);
+                    }
+                }
+            }
+            _ => return Err("Unsupported audio format".into()),
         }
     }
     Ok(pcm_data)

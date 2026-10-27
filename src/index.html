@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>d3khan song saver</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
+
 <body>
   <a class="skip-link" href="#main">Skip to main content</a>
 
@@ -13,7 +15,8 @@
     <!-- ============ Header ============ -->
     <header class="app-header">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">↓</span>
+        <span class="brand-mark" aria-hidden="true"><img src="/song_downloader_icon.svg" alt="Logo"
+            style="width: 24px; height: 24px; object-fit: contain;"></span>
         <div class="brand-text">
           <h1>d3khan song saver</h1>
           <p class="subtitle">Fetch tracks, and keep playlist folders in step</p>
@@ -24,7 +27,8 @@
           <span class="pill-dot" aria-hidden="true"></span>
           <span id="status-text">Idle</span>
         </span>
-        <button type="button" id="settings-btn" class="btn ghost icon-btn" aria-label="Settings" title="Settings" hidden></button>
+        <button type="button" id="settings-btn" class="btn ghost icon-btn" aria-label="Settings" title="Settings"
+          hidden></button>
       </div>
     </header>
 
@@ -50,25 +54,28 @@
         <!-- Link input: single / bulk -->
         <div class="field-group">
           <div class="seg" role="tablist" aria-label="Link input mode">
-            <button type="button" class="seg-btn is-active" id="tab-single" role="tab"
-                    aria-selected="true" aria-controls="panel-single">Single link</button>
-            <button type="button" class="seg-btn" id="tab-bulk" role="tab"
-                    aria-selected="false" aria-controls="panel-bulk">Bulk links</button>
+            <button type="button" class="seg-btn is-active" id="tab-single" role="tab" aria-selected="true"
+              aria-controls="panel-single">Single link</button>
+            <button type="button" class="seg-btn" id="tab-bulk" role="tab" aria-selected="false"
+              aria-controls="panel-bulk">Bulk links</button>
           </div>
 
-          <div class="input-panel" id="panel-single" role="tabpanel" aria-labelledby="tab-single">
+          <!-- ADDED style="position: relative;" HERE -->
+          <div class="input-panel" id="panel-single" role="tabpanel" aria-labelledby="tab-single"
+            style="position: relative;">
             <label class="label" for="url-input">Search SoundCloud (Artist - Title) or paste a URL</label>
             <input type="url" id="url-input" class="text-input" spellcheck="false" autocomplete="off"
-                   placeholder="Rustage - Bow Down to the King… or soundcloud.com/…" aria-describedby="url-note" />
-            <p class="field-note" id="url-note">Paste an open.spotify.com link (Odesli resolves to SoundCloud) or search directly.</p>
+              placeholder="Rustage - Bow Down to the King… or soundcloud.com/…" aria-describedby="url-note" />
+            <p class="field-note" id="url-note">Paste an open.spotify.com link (Odesli resolves to SoundCloud) or search
+              directly.</p>
             <div id="search-results" class="search-results" hidden></div>
           </div>
 
           <div class="input-panel" id="panel-bulk" role="tabpanel" aria-labelledby="tab-bulk" hidden>
             <label class="label" for="urls-input">Links — one per line</label>
             <textarea id="urls-input" class="text-area" rows="5" spellcheck="false"
-                      placeholder="https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…"
-                      aria-describedby="urls-note"></textarea>
+              placeholder="https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…"
+              aria-describedby="urls-note"></textarea>
             <p class="field-note" id="urls-note">Split on newlines or spaces · duplicates removed automatically.</p>
           </div>
         </div>
@@ -80,7 +87,8 @@
             <label class="mode-card" for="mode-download">
               <input type="radio" name="job-mode" id="mode-download" value="download" class="sr-only" />
               <span class="mode-name">Download</span>
-              <span class="mode-desc">Fetch new files and save playlist state for a later sync — no comparisons or deletions.</span>
+              <span class="mode-desc">Fetch new files and save playlist state for a later sync — no comparisons or
+                deletions.</span>
             </label>
             <label class="mode-card is-selected" for="mode-sync">
               <input type="radio" name="job-mode" id="mode-sync" value="sync" class="sr-only" checked />
@@ -112,9 +120,8 @@
             <span class="phase-chip" id="phase-chip">Waiting</span>
             <span class="progress-counts" id="progress-counts">—</span>
           </div>
-          <div class="bar is-empty" id="progress-bar" role="progressbar"
-               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="false"
-               aria-label="Job progress">
+          <div class="bar is-empty" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            aria-valuenow="0" aria-busy="false" aria-label="Job progress">
             <div class="bar-fill" id="bar-fill"></div>
           </div>
           <p class="progress-title" id="progress-title">Nothing running — start a job to see progress here.</p>
@@ -133,8 +140,8 @@
           <div class="log-head">
             <h3 class="log-title">Activity log</h3>
             <div class="log-tools">
-              <button type="button" id="log-collapse-btn" class="btn tiny ghost"
-                      aria-expanded="true" aria-controls="log-body">Collapse</button>
+              <button type="button" id="log-collapse-btn" class="btn tiny ghost" aria-expanded="true"
+                aria-controls="log-body">Collapse</button>
               <button type="button" id="log-clear-btn" class="btn tiny ghost">Clear</button>
             </div>
           </div>
@@ -155,8 +162,8 @@
   <!-- ============ Deletion modal ============ -->
   <div class="modal-layer" id="deletion-layer" hidden>
     <div class="modal-backdrop" aria-hidden="true"></div>
-    <div class="modal" id="deletion-modal" role="dialog" aria-modal="true"
-         aria-labelledby="deletion-title" aria-describedby="deletion-desc">
+    <div class="modal" id="deletion-modal" role="dialog" aria-modal="true" aria-labelledby="deletion-title"
+      aria-describedby="deletion-desc">
       <div class="modal-head">
         <span class="modal-icon warn" aria-hidden="true">!</span>
         <h2 id="deletion-title">Tracks removed from playlist</h2>
@@ -164,7 +171,7 @@
       <p class="modal-body" id="deletion-desc"></p>
       <p class="modal-countdown" id="deletion-countdown" aria-live="off"></p>
       <div class="track-list" id="deletion-list" tabindex="0" role="group"
-           aria-label="Tracks removed from the playlist"></div>
+        aria-label="Tracks removed from the playlist"></div>
       <div class="modal-actions">
         <button type="button" class="btn secondary" id="deletion-keep">Keep files</button>
         <button type="button" class="btn destructive" id="deletion-delete">Delete files</button>
@@ -177,15 +184,16 @@
   <!-- ============ Conflict modal ============ -->
   <div class="modal-layer" id="conflict-layer" hidden>
     <div class="modal-backdrop" aria-hidden="true"></div>
-    <div class="modal" id="conflict-modal" role="dialog" aria-modal="true"
-         aria-labelledby="conflict-title" aria-describedby="conflict-desc">
+    <div class="modal" id="conflict-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title"
+      aria-describedby="conflict-desc">
       <div class="modal-head">
         <span class="modal-icon info" aria-hidden="true">i</span>
         <h2 id="conflict-title">Playlist folder already exists</h2>
       </div>
       <p class="modal-body" id="conflict-desc"></p>
       <p class="modal-countdown" id="conflict-countdown" aria-live="off"></p>
-      <div class="match-list" id="conflict-matches" role="radiogroup" aria-label="Existing folders for this playlist"></div>
+      <div class="match-list" id="conflict-matches" role="radiogroup" aria-label="Existing folders for this playlist">
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn primary" id="conflict-sync">Sync here</button>
         <button type="button" class="btn secondary" id="conflict-create">Create new folder anyway</button>
@@ -200,7 +208,7 @@
   <div class="modal-layer" id="settings-layer" hidden>
     <div class="modal-backdrop" aria-hidden="true"></div>
     <div class="modal modal-settings" id="settings-modal" role="dialog" aria-modal="true"
-         aria-labelledby="settings-title">
+      aria-labelledby="settings-title">
       <div class="modal-head">
         <span class="modal-icon gear-icon" aria-hidden="true">⚙</span>
         <h2 id="settings-title">Account</h2>
@@ -227,4 +235,5 @@
 
   <script src="./app.js"></script>
 </body>
+
 </html>
