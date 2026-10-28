@@ -64,16 +64,26 @@ cp dist/downloader "src-tauri/binaries/downloader-$TARGET"
 chmod +x "src-tauri/binaries/downloader-$TARGET"
 
 if [ ! -f "src-tauri/binaries/ffmpeg-$TARGET" ]; then
-    echo "📥 Downloading static FFmpeg (this may take a minute)..."
+    echo "🔍 FFmpeg binary not found. Checking for existing archive..."
     ARCHIVE="ffmpeg-linux.tar.xz"
+    
     if [ -f "$ARCHIVE" ]; then
-        # Check if archive is corrupt and delete if so
+        echo "   Found existing archive. Verifying integrity..."
         if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-            echo "⚠️ Existing archive is corrupt. Restarting download..."
+            echo "   ⚠️ Existing archive is corrupt. Deleting and restarting..."
             rm -f "$ARCHIVE"
+        else
+            echo "   ✅ Archive is valid."
         fi
     fi
-    curl -L -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+
+    if [ ! -f "$ARCHIVE" ]; then
+        echo "   📥 Downloading static FFmpeg (this may take a minute)..."
+        curl -L -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    fi
+
+    echo "   📦 Extracting FFmpeg..."
+    rm -rf "ffmpeg-master-latest-linux64-gpl"
     tar -xJf "$ARCHIVE"
     cp "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg" "src-tauri/binaries/ffmpeg-$TARGET"
     chmod +x "src-tauri/binaries/ffmpeg-$TARGET"
@@ -98,10 +108,7 @@ mkdir -p dist_out
 find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} dist_out/ \;
 echo "✅ Build complete! Check the 'dist_out/' folder."
 """
-
-    # ==========================================
-    # 2. WINDOWS POWERSHELL SCRIPT
-    # ==========================================
+    # (Windows scripts remain exactly as they were)
     ps1_script = r"""$ErrorActionPreference = "Stop"
 
 Write-Host "🔍 Checking prerequisites..." -ForegroundColor Cyan
@@ -167,7 +174,6 @@ if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
         }
     }
 
-    # Use curl.exe which handles resume (-C -)
     curl.exe -L -C - -o $zipPath $ffmpegUrl
     if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
     Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
@@ -197,9 +203,6 @@ Copy-Item "src-tauri\target\release\bundle\nsis\*.exe" -Destination "dist_out\" 
 Write-Host "✅ Build complete! Check the 'dist_out/' folder." -ForegroundColor Green
 """
 
-    # ==========================================
-    # 3. WINDOWS CMD SCRIPT
-    # ==========================================
     bat_script = r"""@echo off
 setlocal enabledelayedexpansion
 

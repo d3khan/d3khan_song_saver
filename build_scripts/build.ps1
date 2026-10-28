@@ -63,7 +63,6 @@ if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
         }
     }
 
-    # Use curl.exe which handles resume (-C -)
     curl.exe -L -C - -o $zipPath $ffmpegUrl
     if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
     Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
