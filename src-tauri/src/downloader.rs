@@ -55,23 +55,20 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
         .map_err(|e| format!("Spotify search failed: {e}"))?;
 
     if !results.is_empty() {
-        let mut tasks = Vec::new();
+        let mut mapped = Vec::new();
         for track in results {
             let track_id = track.uri.split(':').last().unwrap_or_default().to_string();
             let track_url = format!("https://open.spotify.com/track/{}", track_id);
 
-            tasks.push(tokio::spawn(async move {
-                fetch_spotify_track(&track_url).await
-            }));
-        }
-
-        let mut mapped = Vec::new();
-        for task in tasks {
-            if let Ok(Ok(mut meta)) = task.await {
-                if let Some(m) = meta.pop() {
-                    mapped.push(m);
-                }
-            }
+            mapped.push(TrackMeta {
+                id: track_url,
+                title: track.name,
+                artists: track.artists,
+                album: track.album_name,
+                duration_ms: track.duration_ms as u64,
+                cover_url: None,
+                ..Default::default()
+            });
         }
 
         if !mapped.is_empty() {
