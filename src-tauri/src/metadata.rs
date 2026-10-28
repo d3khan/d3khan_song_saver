@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CollectionKind {
     #[default]
@@ -28,14 +30,14 @@ pub struct TrackMeta {
     pub position: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct Collection {
-    pub kind: CollectionKind,
+#[derive(Clone, Debug, Serialize, Deserialize)] // ADDED SERDE DERIVES
+pub struct SearchResult {
     pub id: String,
-    pub name: String,
+    pub title: String,
+    pub artist: String,
     pub cover_url: Option<String>,
-    pub tracks: Vec<TrackMeta>,
-    pub source_url: String,
+    pub year: Option<String>,
+    pub duration_ms: u64,
 }
 
 pub fn parse_soundcloud_url(input: &str) -> Result<(CollectionKind, String), String> {
@@ -44,12 +46,4 @@ pub fn parse_soundcloud_url(input: &str) -> Result<(CollectionKind, String), Str
     } else {
         Ok((CollectionKind::Track, input.to_string()))
     }
-}
-
-pub async fn fetch_collection(
-    _kind: CollectionKind,
-    _id: &str,
-    _source_url: &str,
-) -> Result<Collection, String> {
-    Err("SoundCloud collection fetching not yet implemented in metadata.rs".to_string())
 }

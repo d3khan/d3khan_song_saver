@@ -1,139 +1,236 @@
-use crate::metadata::TrackMeta;
-use lofty::file::AudioFile;
-use lofty::picture::Picture;
-use lofty::tag::Tag;
-use soundcloud_rs::ClientBuilder; // Use ClientBuilder for retries
-use soundcloud_rs::SoundcloudIdentifier;
-use soundcloud_rs::query::TracksQuery;
-use soundcloud_rs::response::StreamType;
-use std::path::Path;
+use crate::metadata::{SearchResult, TrackMeta};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Manager};
 
-// Use ClientBuilder to enable automatic retries on 401
-pub async fn soundcloud_client() -> Result<soundcloud_rs::Client, String> {
-    ClientBuilder::new()
-        .with_max_retries(3)
-        .with_retry_on_401(true) // Automatically retry on 401 Unauthorized
-        .build()
-        .await
-        .map_err(|e| format!("SoundCloud client init failed: {e}"))
+// -------------------- Search Cache (Binary Format) --------------------
+
+fn get_cache_path(app: &AppHandle) -> PathBuf {
+    let mut path = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    path.push("search_cache.bin");
+    path
 }
 
-pub async fn search_soundcloud(
-    query: &str,
-) -> Result<Vec<(String, String, String, Option<String>, Option<String>)>, String> {
-    let query = query.to_string();
-    tauri::async_runtime::spawn_blocking(move || {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-        rt.block_on(async move {
-            let client = soundcloud_client().await?;
-            let tracks_query = TracksQuery {
-                q: Some(query),
-                limit: Some(10),
-                ..Default::default()
-            };
-            let results = client
-                .search_tracks(Some(&tracks_query))
-                .await
-                .map_err(|e| format!("SoundCloud search failed: {e}"))?;
-
-            let mut mapped: Vec<_> = results
-                .collection
-                .into_iter()
-                .map(|r| {
-                    let id = r.id.map(|i| i.to_string()).unwrap_or_default();
-                    let title = r.title.unwrap_or_default();
-                    let artist = r
-                        .user
-                        .as_ref()
-                        .and_then(|u| u.username.clone())
-                        .unwrap_or_default();
-                    let cover = r.artwork_url;
-                    let year = r
-                        .created_at
-                        .as_ref()
-                        .and_then(|s| s.split('-').next())
-                        .map(|s| s.to_string());
-                    let plays = r.playback_count.unwrap_or(0);
-                    (id, title, artist, cover, year, plays)
-                })
-                .collect();
-
-            // Rank by play count (highest first)
-            mapped.sort_by(|a, b| b.5.cmp(&a.5));
-
-            // Map to final tuple without the play count
-            let final_results = mapped
-                .into_iter()
-                .map(|(id, title, artist, cover, year, _)| (id, title, artist, cover, year))
-                .collect();
-
-            Ok(final_results)
-        })
-    })
-    .await
-    .map_err(|e| format!("Search task panicked: {e}"))?
+fn load_cache(app: &AppHandle) -> std::collections::HashMap<String, Vec<SearchResult>> {
+    let path = get_cache_path(app);
+    if let Ok(data) = std::fs::read(path) {
+        bincode::deserialize(&data).unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    }
 }
 
-pub async fn download_track_hybrid(
-    meta: &TrackMeta,
-    final_path: &Path,
-    cancel: Arc<AtomicBool>,
-) -> Result<u64, String> {
-    // 1. Try YouTube first
-    match download_from_youtube(meta, final_path, cancel.clone()).await {
-        Ok(bytes) => {
-            tag_file(final_path, meta).await?;
-            return Ok(bytes);
-        }
-        Err(e) => {
-            // Log the error but don't crash. We fall back to SoundCloud.
-            eprintln!("YouTube failed, falling back to SoundCloud: {e}");
-        }
+fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<SearchResult>>) {
+    let path = get_cache_path(app);
+    if let Ok(data) = bincode::serialize(cache) {
+        let _ = std::fs::write(path, data);
+    }
+}
+
+// -------------------- Search Logic --------------------
+
+pub async fn search_tracks(app: &AppHandle, query: &str) -> Result<Vec<SearchResult>, String> {
+    let cache_key = query.to_lowercase().trim().to_string();
+    let mut cache = load_cache(app);
+
+    if let Some(results) = cache.get(&cache_key) {
+        return Ok(results.clone());
     }
 
-    // 2. Fall back to SoundCloud
-    download_track(meta, final_path, cancel).await
-}
+    let results = search_youtube_fast(query).await?;
 
-async fn download_from_youtube(
-    meta: &TrackMeta,
-    final_path: &Path,
-    cancel: Arc<AtomicBool>,
-) -> Result<u64, String> {
-    use rusty_ytdl::{
-        Video, VideoOptions, VideoQuality, VideoSearchOptions,
-        search::{SearchOptions, SearchResult, SearchType, YouTube},
-    };
-
-    if cancel.load(Ordering::Relaxed) {
-        return Err("Cancelled".into());
+    if !results.is_empty() {
+        cache.insert(cache_key, results.clone());
+        if cache.len() > 200 {
+            cache.clear();
+        }
+        save_cache(app, &cache);
     }
 
-    let query = format!("{} - {}", meta.artists.join(", "), meta.title);
+    Ok(results)
+}
+
+async fn search_youtube_fast(query: &str) -> Result<Vec<SearchResult>, String> {
+    use rusty_ytdl::search::{SearchOptions, SearchResult as YtResult, YouTube};
 
     let youtube = YouTube::new().map_err(|e| format!("YT init failed: {e}"))?;
-
-    let search_options = SearchOptions {
-        limit: 1,
-        search_type: SearchType::Video,
+    let options = SearchOptions {
+        limit: 10,
         ..Default::default()
     };
-
     let search_results = youtube
-        .search(&query, Some(&search_options))
+        .search(query, Some(&options))
         .await
-        .map_err(|e| format!("YT Search failed: {e}"))?;
+        .map_err(|e| format!("YT search failed: {e}"))?;
 
-    let video_url = match search_results.into_iter().next() {
-        Some(SearchResult::Video(v)) => v.url,
-        _ => return Err("No YouTube video found".into()),
+    let mut results = Vec::new();
+    for res in search_results {
+        if let YtResult::Video(v) = res {
+            // FIXED: Properly handle Option<String> for the year extraction
+            let year = v.uploaded_at.as_ref().and_then(|uploaded_at| {
+                if uploaded_at.len() >= 4 && uploaded_at[0..4].chars().all(|c| c.is_ascii_digit()) {
+                    Some(uploaded_at[0..4].to_string())
+                } else {
+                    None
+                }
+            });
+
+            let cover_url = v
+                .thumbnails
+                .first()
+                .map(|t| t.url.clone())
+                .or_else(|| Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", v.id)));
+
+            results.push(SearchResult {
+                id: v.id.clone(),
+                title: v.title.clone(),
+                artist: v.channel.name.clone(),
+                cover_url,
+                year,
+                duration_ms: (v.duration as u64) * 1000,
+            });
+        }
+    }
+    Ok(results)
+}
+
+pub async fn resolve_spotify_to_youtube(spotify_url: &str) -> Result<String, String> {
+    let encoded = urlencoding::encode(spotify_url);
+    let api_url = format!("https://api.song.link/v1-alpha.1/links?url={}", encoded);
+
+    let resp = reqwest::get(&api_url).await.map_err(|e| e.to_string())?;
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(links) = json.get("linksByPlatform") {
+        if let Some(yt) = links.get("youtube") {
+            if let Some(u) = yt.get("url").and_then(|u| u.as_str()) {
+                return Ok(u.to_string());
+            }
+        }
+    }
+    Err("No YouTube match found on Odesli".into())
+}
+
+pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<SearchResult>, String> {
+    let trimmed = input.trim();
+    if trimmed.contains("open.spotify.com") {
+        let yt_url = resolve_spotify_to_youtube(trimmed).await?;
+        Ok(vec![SearchResult {
+            id: yt_url.clone(),
+            title: "Resolved from Spotify".into(),
+            artist: "YouTube".into(),
+            cover_url: None,
+            year: None,
+            duration_ms: 0,
+        }])
+    } else if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
+        Ok(vec![SearchResult {
+            id: trimmed.to_string(),
+            title: "YouTube Link".into(),
+            artist: "User Provided".into(),
+            cover_url: None,
+            year: None,
+            duration_ms: 0,
+        }])
+    } else {
+        search_tracks(app, trimmed).await
+    }
+}
+
+// -------------------- Download Logic --------------------
+
+pub async fn download_track(
+    app: &AppHandle,
+    meta: &TrackMeta,
+    final_path: &Path,
+    cancel: Arc<AtomicBool>,
+) -> Result<u64, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        return desktop_download(app, meta, final_path, cancel).await;
+    }
+    #[cfg(target_os = "android")]
+    {
+        return android_download(meta, final_path, cancel).await;
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+async fn desktop_download(
+    app: &AppHandle,
+    meta: &TrackMeta,
+    final_path: &Path,
+    cancel: Arc<AtomicBool>,
+) -> Result<u64, String> {
+    use crate::dependencies;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".into());
+    }
+
+    let yt = dependencies::yt_dlp_path(app)?;
+    let ff = dependencies::ffmpeg_path(app)?;
+
+    let url = if meta.id.starts_with("http") {
+        meta.id.clone()
+    } else {
+        format!("https://www.youtube.com/watch?v={}", meta.id)
     };
+
+    let out_base = final_path.with_extension("");
+    let mut cmd = tokio::process::Command::new(&yt);
+
+    cmd.arg("-x")
+        .arg("--audio-format")
+        .arg("mp3")
+        .arg("--audio-quality")
+        .arg("192K")
+        .arg("--ffmpeg-location")
+        .arg(&ff)
+        .arg("--no-playlist")
+        .arg("--embed-thumbnail")
+        .arg("--convert-thumbnails")
+        .arg("jpg")
+        .arg("--embed-metadata")
+        .arg("--extractor-args")
+        .arg("youtube:player_client=default,-web_safari")
+        .arg("-o")
+        .arg(&out_base)
+        .arg(&url);
+
+    let status = cmd.status().await.map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("yt-dlp download failed".into());
+    }
+
+    let _ = std::fs::remove_file(final_path.with_extension("webp"));
+    let _ = std::fs::remove_file(final_path.with_extension("png"));
+    let _ = std::fs::remove_file(final_path.with_extension("jpg"));
+
+    tag_file(final_path, meta).await?;
+    let size = std::fs::metadata(final_path).map(|m| m.len()).unwrap_or(0);
+    Ok(size)
+}
+
+#[cfg(target_os = "android")]
+async fn android_download(
+    meta: &TrackMeta,
+    final_path: &Path,
+    cancel: Arc<AtomicBool>,
+) -> Result<u64, String> {
+    use rusty_ytdl::{Video, VideoOptions, VideoQuality, VideoSearchOptions};
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled".into());
     }
+
+    let url = if meta.id.starts_with("http") {
+        meta.id.clone()
+    } else {
+        format!("https://www.youtube.com/watch?v={}", meta.id)
+    };
 
     let video_options = VideoOptions {
         quality: VideoQuality::Lowest,
@@ -141,16 +238,14 @@ async fn download_from_youtube(
         ..Default::default()
     };
 
-    let video = Video::new_with_options(&video_url, video_options)
-        .map_err(|e| format!("YouTube stream init failed: {e}"))?;
-
+    let video =
+        Video::new_with_options(&url, video_options).map_err(|e| format!("YT init failed: {e}"))?;
     let temp_path = final_path.with_extension("ytdl.tmp");
 
-    // If this fails with "Video source empty", the error is returned and we fall back.
     video
         .download(&temp_path)
         .await
-        .map_err(|e| format!("YouTube download failed: {e}"))?;
+        .map_err(|e| format!("YT download failed: {e}"))?;
 
     if cancel.load(Ordering::Relaxed) {
         let _ = tokio::fs::remove_file(&temp_path).await;
@@ -164,122 +259,27 @@ async fn download_from_youtube(
         .map_err(|e| format!("Write MP3 error: {e}"))?;
 
     let _ = tokio::fs::remove_file(&temp_path).await;
+
+    tag_file_android(final_path, meta).await?;
     Ok(mp3_bytes.len() as u64)
 }
 
-pub async fn download_track(
-    meta: &TrackMeta,
-    final_path: &Path,
-    cancel: Arc<AtomicBool>,
-) -> Result<u64, String> {
-    let meta = meta.clone();
-    let final_path = final_path.to_path_buf();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-        rt.block_on(async move {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
-            }
-
-            let client = soundcloud_client().await?;
-            let track_id: i64 = meta.id.parse().map_err(|_| "Invalid track ID")?;
-
-            let track = client
-                .get_track(&SoundcloudIdentifier::Id(track_id))
-                .await
-                .map_err(|e| format!("Fetch track failed: {e}"))?;
-
-            let transcodings = track
-                .media
-                .as_ref()
-                .and_then(|m| m.transcodings.as_ref())
-                .ok_or("No media transcodings found")?;
-
-            let prog_url = transcodings.iter().find_map(|t| {
-                let is_prog = t.format.as_ref().and_then(|f| f.protocol.as_ref())
-                    == Some(&StreamType::Progressive);
-                if is_prog { t.url.clone() } else { None }
-            });
-
-            if let Some(url) = prog_url {
-                let bytes = download_raw_bytes(&url, cancel.clone()).await?;
-                tokio::fs::write(&final_path, &bytes)
-                    .await
-                    .map_err(|e| format!("Write error: {e}"))?;
-                tag_file(&final_path, &meta).await?;
-                return Ok(bytes.len() as u64);
-            }
-
-            let hls_url = transcodings.iter().find_map(|t| {
-                let is_hls =
-                    t.format.as_ref().and_then(|f| f.protocol.as_ref()) == Some(&StreamType::Hls);
-                if is_hls { t.url.clone() } else { None }
-            });
-
-            if let Some(url) = hls_url {
-                let aac_bytes = download_raw_bytes(&url, cancel.clone()).await?;
-                let pcm = decode_aac_to_pcm(&aac_bytes)?;
-                let mp3_bytes = encode_pcm_to_mp3(&pcm)?;
-                tokio::fs::write(&final_path, &mp3_bytes)
-                    .await
-                    .map_err(|e| format!("Write error: {e}"))?;
-                tag_file(&final_path, &meta).await?;
-                return Ok(mp3_bytes.len() as u64);
-            }
-
-            Err("No available stream (neither Progressive MP3 nor HLS AAC)".into())
-        })
-    })
-    .await
-    .map_err(|e| format!("Download task panicked: {e}"))?
-}
-
-async fn download_raw_bytes(url: &str, cancel: Arc<AtomicBool>) -> Result<Vec<u8>, String> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err("Cancelled".into());
-    }
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| format!("Download request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Download HTTP error: {e}"))?;
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Download bytes error: {e}"))?;
-    Ok(bytes.to_vec())
-}
-
-fn decode_aac_to_pcm(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    let mss = symphonia::core::io::MediaSourceStream::new(
-        Box::new(std::io::Cursor::new(bytes.to_vec())),
-        Default::default(),
-    );
-    let mut hint = symphonia::core::probe::Hint::new();
-    hint.with_extension("aac");
-    decode_stream_to_pcm(mss, hint)
-}
-
+#[cfg(target_os = "android")]
 fn decode_audio_file_to_pcm(path: &Path) -> Result<Vec<f32>, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = symphonia::core::probe::Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    decode_stream_to_pcm(mss, hint)
-}
-
-fn decode_stream_to_pcm(
-    mss: symphonia::core::io::MediaSourceStream,
-    hint: symphonia::core::probe::Hint,
-) -> Result<Vec<f32>, String> {
     use symphonia::core::audio::{AudioBufferRef, Signal};
     use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
     use symphonia::core::errors::Error as SymphoniaError;
     use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
 
     let probed = symphonia::default::get_probe()
         .format(
@@ -290,18 +290,15 @@ fn decode_stream_to_pcm(
         )
         .map_err(|e| e.to_string())?;
     let mut format = probed.format;
-
     let track = format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or("No audio track")?;
     let track_id = track.id;
-
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(|e| e.to_string())?;
-
     let mut pcm_data: Vec<f32> = Vec::new();
 
     loop {
@@ -343,6 +340,7 @@ fn decode_stream_to_pcm(
     Ok(pcm_data)
 }
 
+#[cfg(target_os = "android")]
 fn encode_pcm_to_mp3(pcm: &[f32]) -> Result<Vec<u8>, String> {
     use shine_rs::mp3_encoder::{Mp3Encoder, Mp3EncoderConfig, StereoMode};
 
@@ -351,11 +349,9 @@ fn encode_pcm_to_mp3(pcm: &[f32]) -> Result<Vec<u8>, String> {
         .bitrate(128)
         .channels(2)
         .stereo_mode(StereoMode::Stereo);
-
     let mut encoder = Mp3Encoder::new(config).map_err(|e| format!("Shine init error: {:?}", e))?;
 
     let pcm_i16: Vec<i16> = pcm.iter().map(|&v| (v * 32767.0) as i16).collect();
-
     let chunks = encoder
         .encode_interleaved(&pcm_i16)
         .map_err(|e| format!("Shine encode error: {:?}", e))?;
@@ -368,14 +364,17 @@ fn encode_pcm_to_mp3(pcm: &[f32]) -> Result<Vec<u8>, String> {
         .finish()
         .map_err(|e| format!("Shine finish error: {:?}", e))?;
     out.extend_from_slice(&final_data);
-
     Ok(out)
 }
 
-async fn tag_file(path: &Path, meta: &TrackMeta) -> Result<(), String> {
+#[cfg(target_os = "android")]
+async fn tag_file_android(path: &Path, meta: &TrackMeta) -> Result<(), String> {
     use lofty::config::WriteOptions;
+    use lofty::file::AudioFile;
     use lofty::file::TaggedFileExt;
+    use lofty::picture::Picture;
     use lofty::tag::Accessor;
+    use lofty::tag::Tag;
 
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -410,8 +409,60 @@ async fn tag_file(path: &Path, meta: &TrackMeta) -> Result<(), String> {
         }
     }
 
+    let write_options = WriteOptions::new().use_id3v23(true);
     tagged_file
-        .save_to_path(path, WriteOptions::default())
+        .save_to_path(path, write_options)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn tag_file(path: &Path, meta: &TrackMeta) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::file::AudioFile;
+    use lofty::file::TaggedFileExt;
+    use lofty::picture::Picture;
+    use lofty::tag::Accessor;
+    use lofty::tag::Tag;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let mut tagged_file = lofty::read_from(&mut file).map_err(|e| e.to_string())?;
+
+    let tag = match tagged_file.primary_tag_mut() {
+        Some(t) => t,
+        None => {
+            let tag_type = tagged_file.primary_tag_type();
+            tagged_file.insert_tag(Tag::new(tag_type));
+            tagged_file.primary_tag_mut().unwrap()
+        }
+    };
+
+    tag.set_title(meta.title.clone());
+    tag.set_artist(meta.artists.join(", "));
+    if !meta.album.is_empty() {
+        tag.set_album(meta.album.clone());
+    }
+
+    if tag.pictures().is_empty() {
+        if let Some(cover_url) = &meta.cover_url {
+            if let Ok(resp) = reqwest::get(cover_url).await {
+                if let Ok(img) = resp.bytes().await {
+                    let mut cursor = std::io::Cursor::new(img.to_vec());
+                    if let Ok(pic) = Picture::from_reader(&mut cursor) {
+                        tag.push_picture(pic);
+                    }
+                }
+            }
+        }
+    }
+
+    let write_options = WriteOptions::new().use_id3v23(true);
+    tagged_file
+        .save_to_path(path, write_options)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

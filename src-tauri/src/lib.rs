@@ -1,32 +1,19 @@
 pub mod commands;
 pub mod downloader;
-pub mod jobs;
 pub mod metadata;
-pub mod naming;
-pub mod sync;
+
+#[cfg(not(target_os = "android"))]
+pub mod dependencies;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use tauri::Manager;
 
-pub struct JobControl {
-    pub job_id: String,
-    pub cancel: std::sync::Arc<AtomicBool>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ConflictResolution {
-    SyncHere(PathBuf),
-    CreateNew,
-    Cancel,
-}
-
 pub struct AppState {
     pub settings: std::sync::Mutex<commands::Settings>,
     pub settings_path: PathBuf,
     pub running: AtomicBool,
-    pub job: std::sync::Mutex<Option<JobControl>>,
     pub pending_deletions: std::sync::Mutex<HashMap<String, String>>,
     pub pending_conflicts: std::sync::Mutex<HashMap<String, String>>,
     pub conflict_matches: std::sync::Mutex<HashMap<String, Vec<String>>>,
@@ -42,23 +29,29 @@ pub fn run() {
                 settings: std::sync::Mutex::new(settings),
                 settings_path,
                 running: AtomicBool::new(false),
-                job: std::sync::Mutex::new(None),
                 pending_deletions: std::sync::Mutex::new(HashMap::new()),
                 pending_conflicts: std::sync::Mutex::new(HashMap::new()),
                 conflict_matches: std::sync::Mutex::new(HashMap::new()),
             };
             app.manage(state);
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    dependencies::ensure_dependencies(app_handle).await;
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::search_tracks,
-            commands::resolve_spotify_link,
+            commands::resolve_input,
             commands::download_track,
             commands::pick_folder,
             commands::get_settings,
             commands::save_settings,
-            commands::start_job,
-            commands::cancel_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
