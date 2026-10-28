@@ -13,9 +13,10 @@
 
   try_extract:
     DetailPrint "Found existing FFmpeg archive. Attempting extraction..."
-    nsisunz::UnzipToLog "$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip" "$LOCALAPPDATA\com.d3khan.songsaver\bin"
+    ; Use PowerShell to extract
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip\" -DestinationPath \"$LOCALAPPDATA\com.d3khan.songsaver\bin\" -Force"'
     Pop $R0
-    ${If} $R0 == "success"
+    ${If} $R0 == "0"
       Goto move_ffmpeg
     ${Else}
       DetailPrint "Archive is corrupt. Deleting and re-downloading..."
@@ -25,26 +26,24 @@
 
   download_new:
     DetailPrint "Downloading FFmpeg (approx 100MB, this may take a moment)..."
-    inetc::get /TIMEOUT 120000 \
-      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
-      "$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip" /END
+    ; Use PowerShell to download
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri \"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip\" -OutFile \"$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip\""'
     Pop $R0
-    ${If} $R0 != "OK"
-      MessageBox MB_ICONSTOP "Failed to download FFmpeg: $R0"
+    ${If} $R0 != "0"
+      MessageBox MB_ICONSTOP "Failed to download FFmpeg."
       Abort
     ${EndIf}
     
     DetailPrint "Extracting FFmpeg..."
-    nsisunz::UnzipToLog "$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip" "$LOCALAPPDATA\com.d3khan.songsaver\bin"
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$LOCALAPPDATA\com.d3khan.songsaver\ffmpeg.zip\" -DestinationPath \"$LOCALAPPDATA\com.d3khan.songsaver\bin\" -Force"'
     Pop $R0
-    ${If} $R0 != "success"
+    ${If} $R0 != "0"
       MessageBox MB_ICONSTOP "Failed to extract FFmpeg."
       Abort
     ${EndIf}
 
   move_ffmpeg:
     DetailPrint "Finalizing FFmpeg installation..."
-    ; The zip extracts to ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe
     Rename /REBOOTOK "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg.exe"
     RMDir /r "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg-master-latest-win64-gpl"
     

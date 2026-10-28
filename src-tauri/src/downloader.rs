@@ -123,7 +123,10 @@ async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String
 
     let resp = client
         .get(spotify_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -185,9 +188,16 @@ pub async fn download_batch(
         .path()
         .app_local_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."));
-    let mut ffmpeg_path = app_data.join("ffmpeg.exe");
+
+    // DYNAMIC OS CHECK FOR FFMPEG NAME
+    #[cfg(target_os = "windows")]
+    let ffmpeg_name = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_name = "ffmpeg";
+
+    let mut ffmpeg_path = app_data.join(ffmpeg_name);
     if !ffmpeg_path.exists() {
-        ffmpeg_path = app_data.join("bin").join("ffmpeg.exe");
+        ffmpeg_path = app_data.join("bin").join(ffmpeg_name);
     }
 
     let ffmpeg_str = if ffmpeg_path.exists() {
