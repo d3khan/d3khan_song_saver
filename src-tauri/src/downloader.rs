@@ -1,5 +1,4 @@
 use crate::metadata::TrackMeta;
-use regex::Regex;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
@@ -122,80 +121,60 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
 }
 
 async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String> {
+    // Fetch the Spotify track page directly (oEmbed does not include artist)
     let client = reqwest::Client::new();
-    let resp = client.get(spotify_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .send().await.map_err(|e| format!("Network error: {e}"))?;
+
+    let resp = client
+        .get(spotify_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
 
     let html = resp
         .text()
         .await
-        .map_err(|e| format!("Failed to read HTML: {e}"))?;
+        .map_err(|e| format!("Failed to read page: {e}"))?;
 
-    let title_re = Regex::new(r#"<meta property="og:title" content="([^"]+)""#).unwrap();
-    let raw_title = title_re
-        .captures(&html)
-        .map(|c| c[1].to_string())
-        .unwrap_or_else(|| "Unknown Title".into());
+    // Parse og:title for song title
+    let title = extract_meta_tag(&html, "property=\"og:title\"")
+        .unwrap_or_else(|| "Unknown Title".to_string());
 
-    let desc_re = Regex::new(r#"<meta property="og:description" content="([^"]+)""#).unwrap();
-    let desc = desc_re
-        .captures(&html)
-        .map(|c| c[1].to_string())
-        .unwrap_or_default();
+    // Parse og:description for artist (format: "Artist · Album · Song · Year" or similar)
+    let description = extract_meta_tag(&html, "property=\"og:description\"").unwrap_or_default();
+    let artist = description
+        .split(" · ")
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Unknown Artist")
+        .trim()
+        .to_string();
 
-    let parts: Vec<&str> = desc.split(" · ").collect();
-    let artist = if !parts.is_empty() {
-        parts[0].to_string()
-    } else {
-        "Unknown Artist".to_string()
-    };
-    let year = if parts.len() >= 3 {
-        Some(parts[2].to_string())
-    } else {
-        None
-    };
-
-    let mut clean_title = raw_title.clone();
-    if clean_title.starts_with(&format!("{} - ", artist)) {
-        clean_title = clean_title.replace(&format!("{} - ", artist), "");
-    }
-
-    let mut cover_url = None;
-    if let Some(caps) = Regex::new(r#"<meta property="og:image" content="([^"]+)""#)
-        .unwrap()
-        .captures(&html)
-    {
-        cover_url = Some(caps[1].to_string());
-    } else if let Some(caps) =
-        Regex::new(r#""images":\[\{"url":"(https://i\.scdn\.co/image/[^"]+)""#)
-            .unwrap()
-            .captures(&html)
-    {
-        cover_url = Some(caps[1].to_string());
-    } else if let Some(caps) = Regex::new(r#"(https://i\.scdn\.co/image/[a-zA-Z0-9]+)"#)
-        .unwrap()
-        .captures(&html)
-    {
-        cover_url = Some(caps[1].to_string());
-    }
-
-    let dur_re = Regex::new(r#""duration_ms":(\d+)"#).unwrap();
-    let duration_ms = dur_re
-        .captures(&html)
-        .and_then(|c| c[1].parse::<u64>().ok())
-        .unwrap_or(0);
+    let cover_url = extract_meta_tag(&html, "property=\"og:image\"");
 
     return Ok(vec![TrackMeta {
         id: spotify_url.to_string(),
-        title: clean_title,
-        artists: vec![artist],
+        title,
+        artists: if artist.is_empty() || artist == "Unknown Artist" {
+            vec!["Unknown Artist".to_string()]
+        } else {
+            vec![artist]
+        },
         album: String::new(),
-        release_date: year,
+        release_date: None,
         cover_url,
-        duration_ms,
+        duration_ms: 0,
         ..Default::default()
     }]);
+}
+
+fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
+    let prop_str = prop.trim();
+    // Find the content attribute value in the meta tag that contains this prop
+    let search_key = format!("{} content=\"", prop_str);
+    let start_idx = html.find(&search_key)? + search_key.len();
+    let end_idx = html[start_idx..].find("\"")?;
+    Some(html[start_idx..start_idx + end_idx].to_string())
 }
 
 pub async fn download_batch(
@@ -300,21 +279,21 @@ pub async fn download_batch(
 
         if let Some(path) = downloaded_path {
             if path.exists() {
-                let _ = app.emit(
-                    "download-progress",
-                    json!({
-                        "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                        "status": format!("Finished {}", meta.title)
-                    }),
-                );
-
-                // Python already embedded cover art and tagged the file.
-                // Rust only deletes the leftover backup .jpg if present.
+                // Python already embedded the cover art and tagged the file.
+                // Rust just cleans up the leftover backup .jpg
                 if let Err(e) = tag_file(app, &path, meta).await {
                     eprintln!("Failed to finalize {}: {}", meta.title, e);
                 }
             }
         }
+
+        let _ = app.emit(
+            "download-progress",
+            json!({
+                "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                "status": format!("Finished {}", meta.title)
+            }),
+        );
 
         if i < total - 1 {
             sleep(Duration::from_secs(5)).await;
@@ -328,7 +307,6 @@ pub async fn download_batch(
     Ok(())
 }
 
-#[allow(unreachable_code)]
 async fn tag_file(app: &AppHandle, path: &Path, _meta: &TrackMeta) -> Result<(), String> {
     let jpg_path = path.with_extension("jpg");
     if jpg_path.exists() {
@@ -337,11 +315,6 @@ async fn tag_file(app: &AppHandle, path: &Path, _meta: &TrackMeta) -> Result<(),
                 "download-log",
                 json!({ "message": format!("Cleaned backup .jpg: {}", jpg_path.display()) }),
             );
-        } else {
-            return Ok(()); // this is cuz I expect it to not keep a backup
-            let msg = format!("Could not delete backup .jpg: {}", jpg_path.display());
-            eprintln!("{}", msg);
-            let _ = app.emit("download-log", json!({ "message": msg }));
         }
     }
     Ok(())
