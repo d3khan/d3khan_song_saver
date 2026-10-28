@@ -30,3 +30,5 @@ Thumbs.db
 # --- local UI review artifacts ---
 ui-*.png
 src/_preview_*.html
+
+build/

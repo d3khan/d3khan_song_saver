@@ -56,17 +56,13 @@
 
           <div class="input-panel" id="panel-single" role="tabpanel" aria-labelledby="tab-single"
             style="position: relative;">
-            <label class="label" for="url-input">Search Spotify, YouTube (Artist - Title) or paste a URL</label>
-
-            <!-- ADDED ROW FOR INPUT + FIND BUTTON -->
+            <label class="label" for="url-input">Search for a song or paste a link</label>
             <div style="display: flex; gap: 8px;">
               <input type="text" id="url-input" class="text-input" spellcheck="false" autocomplete="off"
                 placeholder="Drake - Plot Twist… or open.spotify.com/…" aria-describedby="url-note" style="flex: 1;" />
               <button type="button" id="find-btn" class="btn secondary" style="padding: 0 20px;">Find</button>
             </div>
-
-            <p class="field-note" id="url-note">Paste an open.spotify.com link (Odesli resolves to YouTube) or search
-              directly.</p>
+            <p class="field-note" id="url-note">Paste a Spotify/YouTube link, or type a song name to find matches.</p>
             <div id="search-results" class="search-results" hidden></div>
           </div>
 
@@ -109,7 +105,7 @@
 
       <section class="panel panel-activity" aria-labelledby="activity-title">
         <h2 class="panel-title" id="activity-title">Progress</h2>
-        <!-- PROGRESS, LOGS, ETC stay the same -->
+
         <div class="progress-block" role="status" aria-live="polite">
           <div class="progress-head">
             <span class="phase-chip" id="phase-chip">Waiting</span>
@@ -125,6 +121,11 @@
         <div class="log-block" id="log-block">
           <div class="log-head">
             <h3 class="log-title">Activity log</h3>
+            <div class="log-tools">
+              <button type="button" id="log-collapse-btn" class="btn tiny ghost" aria-expanded="true"
+                aria-controls="log-body">Collapse</button>
+              <button type="button" id="log-clear-btn" class="btn tiny ghost">Clear</button>
+            </div>
           </div>
           <div class="log-body" id="log-body" role="log" aria-live="polite" aria-relevant="additions">
             <p class="log-empty" id="log-empty">Log lines appear here while a job runs.</p>
@@ -139,9 +140,8 @@
     </footer>
   </div>
 
-  <!-- Modals stay here -->
-
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+
   <script src="./app.js"></script>
 </body>
 

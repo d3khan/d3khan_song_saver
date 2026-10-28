@@ -1,7 +1,6 @@
-use crate::metadata::{SearchResult, TrackMeta};
+use crate::metadata::TrackMeta;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicBool;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -25,34 +24,20 @@ pub struct TrackResult {
     pub duration_ms: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DownloadResult {
-    pub status: String, // "downloaded" or "skipped"
-    pub path: String,
-    pub message: String,
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn search_tracks(app: AppHandle, query: String) -> Result<Vec<TrackResult>, String> {
-    let results = crate::downloader::search_tracks(&app, &query).await?;
-    Ok(results.into_iter().map(map_to_track_result).collect())
-}
-
 #[tauri::command(rename_all = "camelCase")]
 pub async fn resolve_input(app: AppHandle, input: String) -> Result<Vec<TrackResult>, String> {
-    let results = crate::downloader::resolve_input(&app, &input).await?;
-    Ok(results.into_iter().map(map_to_track_result).collect())
-}
-
-fn map_to_track_result(item: SearchResult) -> TrackResult {
-    TrackResult {
-        id: item.id,
-        title: item.title,
-        artist: item.artist,
-        cover_url: item.cover_url,
-        year: item.year,
-        duration_ms: item.duration_ms,
-    }
+    let tracks = crate::downloader::resolve_input(&app, &input).await?;
+    Ok(tracks
+        .into_iter()
+        .map(|t| TrackResult {
+            id: t.id,
+            title: t.title,
+            artist: t.artists.join(", "),
+            cover_url: t.cover_url,
+            year: t.release_date,
+            duration_ms: t.duration_ms,
+        })
+        .collect())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -62,73 +47,51 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
         .file()
         .set_title("Choose output folder")
         .blocking_pick_folder();
-    match folder {
-        Some(path) => Ok(Some(path.to_string())),
-        None => Ok(None),
-    }
+    Ok(folder.map(|p| p.to_string()))
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn download_track(
     app: AppHandle,
-    track: TrackResult,
+    tracks: Vec<TrackResult>,
     output_dir: String,
-) -> Result<DownloadResult, String> {
-    let safe_title = track
-        .title
-        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let safe_artist = track
-        .artist
-        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let file_name = format!("{} - {}.mp3", safe_title, safe_artist);
-    let final_path = std::path::PathBuf::from(&output_dir).join(&file_name);
+) -> Result<(), String> {
+    let out_path = std::path::PathBuf::from(&output_dir);
 
-    // 1. DUPLICATE CHECK
-    if final_path.exists() {
-        return Ok(DownloadResult {
-            status: "skipped".to_string(),
-            path: final_path.to_string_lossy().into_owned(),
-            message: "File already exists in the target folder.".to_string(),
-        });
-    }
+    let metas: Vec<TrackMeta> = tracks
+        .into_iter()
+        .map(|t| TrackMeta {
+            id: t.id,
+            title: t.title,
+            artists: t.artist.split(", ").map(|s| s.to_string()).collect(),
+            cover_url: t.cover_url,
+            release_date: t.year,
+            duration_ms: t.duration_ms,
+            ..Default::default()
+        })
+        .collect();
 
-    let meta = TrackMeta {
-        id: track.id,
-        title: track.title,
-        artists: vec![track.artist],
-        album: String::new(),
-        album_artists: vec![],
-        album_id: None,
-        track_number: 1,
-        total_tracks: None,
-        disc_number: 1,
-        duration_ms: track.duration_ms,
-        release_date: track.year,
-        isrc: None,
-        label: None,
-        copyright: None,
-        genres: vec![],
-        explicit: false,
-        cover_url: track.cover_url,
-        position: 0,
-    };
-
-    std::fs::create_dir_all(&output_dir).map_err(|e| format!("folder error: {e}"))?;
-
-    crate::downloader::download_track(
-        &app,
-        &meta,
-        &final_path,
-        std::sync::Arc::new(AtomicBool::new(false)),
+    let app_clone = app.clone();
+    // Await the batch download so the frontend knows when it's truly finished
+    crate::downloader::download_batch(
+        &app_clone,
+        metas,
+        &out_path,
+        |current, total, title, status| {
+            let _ = app_clone.emit(
+                "download-progress",
+                serde_json::json!({
+                    "current": current,
+                    "total": total,
+                    "title": title,
+                    "status": status,
+                }),
+            );
+        },
     )
-    .await
-    .map_err(|e| format!("download error: {e}"))?;
+    .await?;
 
-    Ok(DownloadResult {
-        status: "downloaded".to_string(),
-        path: final_path.to_string_lossy().into_owned(),
-        message: "Successfully downloaded.".to_string(),
-    })
+    Ok(())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -137,7 +100,6 @@ pub async fn get_settings() -> Result<Settings, String> {
         source: "none".into(),
     })
 }
-
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_settings() -> Result<Settings, String> {
     Ok(Settings {

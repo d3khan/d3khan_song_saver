@@ -8,7 +8,7 @@ pub enum CollectionKind {
     Playlist,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TrackMeta {
     pub id: String,
     pub title: String,

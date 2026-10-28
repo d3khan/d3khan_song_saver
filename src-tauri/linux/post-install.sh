@@ -8,8 +8,15 @@ mkdir -p "$BIN_DIR"
 if [ ! -x "$BIN_DIR/yt-dlp" ]; then
   echo "Downloading yt-dlp…"
   curl -L -o "$BIN_DIR/yt-dlp" \
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+    "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp_linux"
   chmod +x "$BIN_DIR/yt-dlp"
+fi
+
+if [ ! -x "$BIN_DIR/bgutil-pot" ]; then
+  echo "Downloading PO Token Provider…"
+  curl -L -o "$BIN_DIR/bgutil-pot" \
+    "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64"
+  chmod +x "$BIN_DIR/bgutil-pot"
 fi
 
 if [ ! -x "$BIN_DIR/ffmpeg" ]; then
