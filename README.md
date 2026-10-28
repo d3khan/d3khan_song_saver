@@ -17,6 +17,14 @@ ID3v2.3 front cover.
 
 ---
 
+## What's new in this version
+
+- Supports search queries for songs (search via Spotify and download matched tracks).
+- Supports YouTube links for videos (paste a `youtube.com` URL to download video).
+- If an error is seen during download, open YouTube, watch a full video that is longer than one minute to the end, then come back and try again.
+
+---
+
 ## How it works
 
 1. **Search or paste a link** — the user pastes a Spotify track/album/playlist URL or a
