@@ -1,21 +1,10 @@
 use crate::metadata::TrackMeta;
 use regex::Regex;
 use serde_json::json;
-use spotapi::SpotifySearch;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandEvent;
 use tokio::time::{Duration, sleep};
-
-// Lofty Imports
-use lofty::config::WriteOptions;
-use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::picture::Picture;
-use lofty::tag::{Accessor, Tag, TagType};
-
-// -------------------- Caching --------------------
 
 fn get_cache_path(app: &AppHandle) -> PathBuf {
     let mut path = app
@@ -26,23 +15,21 @@ fn get_cache_path(app: &AppHandle) -> PathBuf {
     path
 }
 
-fn load_cache(app: &AppHandle) -> HashMap<String, Vec<TrackMeta>> {
+fn load_cache(app: &AppHandle) -> std::collections::HashMap<String, Vec<TrackMeta>> {
     let path = get_cache_path(app);
     if let Ok(data) = std::fs::read(path) {
         bincode::deserialize(&data).unwrap_or_default()
     } else {
-        HashMap::new()
+        std::collections::HashMap::new()
     }
 }
 
-fn save_cache(app: &AppHandle, cache: &HashMap<String, Vec<TrackMeta>>) {
+fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<TrackMeta>>) {
     let path = get_cache_path(app);
     if let Ok(data) = bincode::serialize(cache) {
         let _ = std::fs::write(path, data);
     }
 }
-
-// -------------------- 1. Search & Metadata Resolution --------------------
 
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
     let trimmed = input.trim();
@@ -62,7 +49,7 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
         return Ok(cached_results.clone());
     }
 
-    let mut search = SpotifySearch::new();
+    let mut search = spotapi::SpotifySearch::new();
     let results = search
         .tracks(trimmed, 10)
         .await
@@ -211,8 +198,6 @@ async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String
     }]);
 }
 
-// -------------------- 2. Download & Tag --------------------
-
 pub async fn download_batch(
     app: &AppHandle,
     tracks: Vec<TrackMeta>,
@@ -282,7 +267,7 @@ pub async fn download_batch(
         let mut error_msg: Option<String> = None;
 
         while let Some(event) = rx.recv().await {
-            if let CommandEvent::Stdout(line) = event {
+            if let tauri_plugin_shell::process::CommandEvent::Stdout(line) = event {
                 let text = String::from_utf8_lossy(&line);
                 if text.contains("\"status\": \"success\"") {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -318,24 +303,18 @@ pub async fn download_batch(
                 let _ = app.emit(
                     "download-progress",
                     json!({
-                        "percent": ((i as f64 + 0.6) / total as f64) * 100.0,
-                        "status": format!("Tagging {}...", meta.title)
+                        "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                        "status": format!("Finished {}", meta.title)
                     }),
                 );
 
+                // Python already embedded cover art and tagged the file.
+                // Rust only deletes the leftover backup .jpg if present.
                 if let Err(e) = tag_file(app, &path, meta).await {
-                    eprintln!("Failed to tag {}: {}", meta.title, e);
+                    eprintln!("Failed to finalize {}: {}", meta.title, e);
                 }
             }
         }
-
-        let _ = app.emit(
-            "download-progress",
-            json!({
-                "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                "status": format!("Finished {}", meta.title)
-            }),
-        );
 
         if i < total - 1 {
             sleep(Duration::from_secs(5)).await;
@@ -349,97 +328,21 @@ pub async fn download_batch(
     Ok(())
 }
 
-async fn tag_file(app: &AppHandle, path: &Path, meta: &TrackMeta) -> Result<(), String> {
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-
-    let mut tagged_file = lofty::read_from(&mut file).map_err(|e| e.to_string())?;
-
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("mp3");
-    let tag_type = if ext == "mp4" || ext == "m4a" {
-        TagType::Mp4Ilst
-    } else {
-        TagType::Id3v2
-    };
-
-    let tag = match tagged_file.tag_mut(tag_type) {
-        Some(t) => t,
-        None => {
-            tagged_file.insert_tag(Tag::new(tag_type));
-            tagged_file.tag_mut(tag_type).unwrap()
-        }
-    };
-
-    let artist_str = meta.artists.join(", ");
-    let mut clean_title = meta.title.clone();
-
-    let re_brackets = Regex::new(
-        r"(?i)\s*[\(\[](official|video|audio|lyric|lyrics|visualizer|remaster|hd|4k).*?[\)\]]",
-    )
-    .unwrap();
-    clean_title = re_brackets.replace_all(&clean_title, "").to_string();
-
-    let re_artist = Regex::new(&format!(r"(?i)^{}\s*-\s*", regex::escape(&artist_str))).unwrap();
-    clean_title = re_artist.replace_all(&clean_title, "").to_string();
-
-    tag.set_title(clean_title.trim().to_string());
-    tag.set_artist(artist_str);
-    tag.set_album(meta.album.clone());
-
-    if let Some(year) = &meta.release_date {
-        if year.len() >= 4 {
-            if let Ok(y) = year[0..4].parse() {
-                tag.set_year(y);
-            }
+#[allow(unreachable_code)]
+async fn tag_file(app: &AppHandle, path: &Path, _meta: &TrackMeta) -> Result<(), String> {
+    let jpg_path = path.with_extension("jpg");
+    if jpg_path.exists() {
+        if std::fs::remove_file(&jpg_path).is_ok() {
+            let _ = app.emit(
+                "download-log",
+                json!({ "message": format!("Cleaned backup .jpg: {}", jpg_path.display()) }),
+            );
+        } else {
+            return Ok(()); // this is cuz I expect it to not keep a backup
+            let msg = format!("Could not delete backup .jpg: {}", jpg_path.display());
+            eprintln!("{}", msg);
+            let _ = app.emit("download-log", json!({ "message": msg }));
         }
     }
-
-    // --- SAFE COVER ART REPLACEMENT ---
-    let mut new_picture: Option<Picture> = None;
-
-    // 1. Try downloading from Spotify URL
-    if let Some(cover_url) = &meta.cover_url {
-        if let Ok(resp) = reqwest::get(cover_url).await {
-            if let Ok(img) = resp.bytes().await {
-                let mut cursor = std::io::Cursor::new(img.to_vec());
-                if let Ok(pic) = Picture::from_reader(&mut cursor) {
-                    new_picture = Some(pic);
-                }
-            }
-        }
-    }
-
-    // 2. Fallback: If Spotify failed, check for the local .jpg
-    if new_picture.is_none() {
-        let jpg_path = path.with_extension("jpg");
-        if jpg_path.exists() {
-            if let Ok(img) = std::fs::read(&jpg_path) {
-                let mut cursor = std::io::Cursor::new(img);
-                if let Ok(pic) = Picture::from_reader(&mut cursor) {
-                    new_picture = Some(pic);
-                }
-            }
-        }
-    }
-
-    // 3. Only replace the cover art if we found a new one!
-    if let Some(pic) = new_picture {
-        tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
-        tag.push_picture(pic);
-    } else {
-        let _ = app.emit(
-            "download-log",
-            json!({ "message": format!("⚠️ No Spotify cover found for {}. Keeping original.", meta.title) }),
-        );
-    }
-
-    let write_options = WriteOptions::new().use_id3v23(true);
-    tagged_file
-        .save_to_path(path, write_options)
-        .map_err(|e| e.to_string())?;
-
     Ok(())
 }
