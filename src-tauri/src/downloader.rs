@@ -9,6 +9,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tokio::time::{Duration, sleep};
 
+// Lofty Imports
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::Picture;
@@ -102,9 +103,15 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", encoded);
     let client = reqwest::Client::new();
 
-    let resp = client.get(&oembed_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .send().await.map_err(|e| format!("Network error: {e}"))?;
+    let resp = client
+        .get(&oembed_url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
 
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
 
@@ -129,7 +136,6 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
 
 async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String> {
     let client = reqwest::Client::new();
-    // Use a full browser User-Agent to bypass Spotify's bot blocking
     let resp = client.get(spotify_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .send().await.map_err(|e| format!("Network error: {e}"))?;
@@ -349,6 +355,7 @@ async fn tag_file(app: &AppHandle, path: &Path, meta: &TrackMeta) -> Result<(), 
         .write(true)
         .open(path)
         .map_err(|e| e.to_string())?;
+
     let mut tagged_file = lofty::read_from(&mut file).map_err(|e| e.to_string())?;
 
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("mp3");
@@ -390,8 +397,8 @@ async fn tag_file(app: &AppHandle, path: &Path, meta: &TrackMeta) -> Result<(), 
         }
     }
 
-    // BULLETPROOF COVER ART SWAP
-    let mut art_embedded = false;
+    // --- SAFE COVER ART REPLACEMENT ---
+    let mut new_picture: Option<Picture> = None;
 
     // 1. Try downloading from Spotify URL
     if let Some(cover_url) = &meta.cover_url {
@@ -399,35 +406,33 @@ async fn tag_file(app: &AppHandle, path: &Path, meta: &TrackMeta) -> Result<(), 
             if let Ok(img) = resp.bytes().await {
                 let mut cursor = std::io::Cursor::new(img.to_vec());
                 if let Ok(pic) = Picture::from_reader(&mut cursor) {
-                    tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
-                    tag.push_picture(pic);
-                    art_embedded = true;
+                    new_picture = Some(pic);
                 }
             }
         }
     }
 
-    // 2. Fallback: If Spotify failed, check for the local .jpg that Python left behind
-    if !art_embedded {
+    // 2. Fallback: If Spotify failed, check for the local .jpg
+    if new_picture.is_none() {
         let jpg_path = path.with_extension("jpg");
         if jpg_path.exists() {
             if let Ok(img) = std::fs::read(&jpg_path) {
                 let mut cursor = std::io::Cursor::new(img);
                 if let Ok(pic) = Picture::from_reader(&mut cursor) {
-                    tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
-                    tag.push_picture(pic);
-                    art_embedded = true;
+                    new_picture = Some(pic);
                 }
             }
         }
     }
 
-    if !art_embedded {
+    // 3. Only replace the cover art if we found a new one!
+    if let Some(pic) = new_picture {
+        tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
+        tag.push_picture(pic);
+    } else {
         let _ = app.emit(
             "download-log",
-            json!({
-                "message": format!("⚠️ Could not find any cover art for {}", meta.title)
-            }),
+            json!({ "message": format!("⚠️ No Spotify cover found for {}. Keeping original.", meta.title) }),
         );
     }
 
