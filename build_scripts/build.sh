@@ -22,6 +22,12 @@ else
     cd "$REPO_NAME"
 fi
 
+# --- FIX: REMOVE WINDOWS TOOLCHAIN LOCK ---
+if [ -f "rust-toolchain.toml" ]; then
+    echo "🧹 Removing Windows-specific toolchain file for Linux build..."
+    rm -f rust-toolchain.toml
+fi
+
 if [ -d ".git" ]; then
     echo "🔄 Pulling latest changes from Git..."
     git pull || echo "⚠️ Warning: Git pull failed. Continuing with local files."
