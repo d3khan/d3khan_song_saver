@@ -102,12 +102,9 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", encoded);
     let client = reqwest::Client::new();
 
-    let resp = client
-        .get(&oembed_url)
-        .header("User-Agent", "Mozilla/5.0")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
+    let resp = client.get(&oembed_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send().await.map_err(|e| format!("Network error: {e}"))?;
 
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
 
@@ -132,15 +129,10 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
 
 async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String> {
     let client = reqwest::Client::new();
-    let resp = client
-        .get(spotify_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
+    // Use a full browser User-Agent to bypass Spotify's bot blocking
+    let resp = client.get(spotify_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send().await.map_err(|e| format!("Network error: {e}"))?;
 
     let html = resp
         .text()
@@ -398,30 +390,45 @@ async fn tag_file(app: &AppHandle, path: &Path, meta: &TrackMeta) -> Result<(), 
         }
     }
 
-    // SAFE COVER ART REPLACEMENT
+    // BULLETPROOF COVER ART SWAP
+    let mut art_embedded = false;
+
+    // 1. Try downloading from Spotify URL
     if let Some(cover_url) = &meta.cover_url {
-        let mut success = false;
         if let Ok(resp) = reqwest::get(cover_url).await {
             if let Ok(img) = resp.bytes().await {
                 let mut cursor = std::io::Cursor::new(img.to_vec());
                 if let Ok(pic) = Picture::from_reader(&mut cursor) {
                     tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
                     tag.push_picture(pic);
-                    success = true;
+                    art_embedded = true;
                 }
             }
         }
+    }
 
-        // If Spotify art fails, the Python .jpg remains safely untouched!
-        if !success {
-            let _ = app.emit("download-log", json!({ 
-                "message": format!("⚠️ Could not download high-res cover for {}. Keeping original.", meta.title) 
-            }));
+    // 2. Fallback: If Spotify failed, check for the local .jpg that Python left behind
+    if !art_embedded {
+        let jpg_path = path.with_extension("jpg");
+        if jpg_path.exists() {
+            if let Ok(img) = std::fs::read(&jpg_path) {
+                let mut cursor = std::io::Cursor::new(img);
+                if let Ok(pic) = Picture::from_reader(&mut cursor) {
+                    tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
+                    tag.push_picture(pic);
+                    art_embedded = true;
+                }
+            }
         }
-    } else {
-        let _ = app.emit("download-log", json!({ 
-            "message": format!("⚠️ No Spotify cover found for {}. Keeping original.", meta.title) 
-        }));
+    }
+
+    if !art_embedded {
+        let _ = app.emit(
+            "download-log",
+            json!({
+                "message": format!("⚠️ Could not find any cover art for {}", meta.title)
+            }),
+        );
     }
 
     let write_options = WriteOptions::new().use_id3v23(true);

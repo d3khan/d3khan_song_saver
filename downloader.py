@@ -39,7 +39,8 @@ def has_audio_stream(file_path, ffmpeg_dir=None):
         return False, 0
 
 def cleanup_leftovers(out_base):
-    for ext in ['.webp', '.png', '.temp.mp3', '.jpg', '.temp.mp4']:
+    # KEEP the .jpg so Rust can use it as a fallback!
+    for ext in ['.webp', '.png', '.temp.mp3', '.temp.mp4']:
         leftover = out_base + ext
         if os.path.exists(leftover):
             try: os.remove(leftover)
@@ -54,14 +55,14 @@ def download_track(search_query, out_base, ffmpeg_path, song, artist):
             'merge_output_format': 'mp4',
             'noplaylist': True,
             'writethumbnail': True,
-            'convert_thumbnails': 'jpg', # Force JPG
+            'convert_thumbnails': 'jpg',
             'outtmpl': out_base + '.%(ext)s',
             'quiet': True,
             'socket_timeout': 30,
             'retries': 10,
             'nocheckcertificate': True,
             'force_ipv4': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}, # Bypass 403
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             'postprocessors': [
                 {"key": "EmbedThumbnail"},
                 {"key": "FFmpegMetadata"},
@@ -76,14 +77,14 @@ def download_track(search_query, out_base, ffmpeg_path, song, artist):
             'format': 'bestaudio/best',
             'noplaylist': True,
             'writethumbnail': True,
-            'convert_thumbnails': 'jpg', # Force JPG
+            'convert_thumbnails': 'jpg',
             'outtmpl': out_base + '.%(ext)s',
             'quiet': True,
             'socket_timeout': 30,
             'retries': 10,
             'nocheckcertificate': True,
             'force_ipv4': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}, # Bypass 403
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             'postprocessors': [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
                 {"key": "FFmpegMetadata"},
@@ -112,7 +113,6 @@ def download_track(search_query, out_base, ffmpeg_path, song, artist):
                 return
                 
     except Exception as e:
-        # Cleanup even on failure so folders stay tidy
         cleanup_leftovers(out_base)
         print(json.dumps({"status": "error", "message": str(e)}))
         return
