@@ -9,7 +9,7 @@ where python >nul 2>nul
 if %errorlevel% neq 0 ( echo Python not installed. & pause & exit /b 1 )
 
 :: --- STAGE 1: REPO LOCATION & GIT PULL ---
-set REPO_NAME=spotify_downloader
+set REPO_NAME=d3khan_song_saver
 if exist "package.json" (
     echo Found repository in current directory.
 ) else if exist "..\package.json" (
@@ -20,7 +20,7 @@ if exist "package.json" (
     echo Found repository in subdirectory. Moved in.
 ) else (
     echo Repository not found. Cloning...
-    git clone https://github.com/d3khan/spotify_downloader.git
+    git clone https://github.com/d3khan/d3khan_song_saver.git
     cd %REPO_NAME%
 )
 
@@ -50,7 +50,17 @@ copy /Y "dist\downloader.exe" "src-tauri\binaries\downloader-!TARGET!.exe" >nul
 
 if not exist "src-tauri\binaries\ffmpeg-!TARGET!.exe" (
     echo Downloading static FFmpeg...
+    
+    if exist "ffmpeg.zip" (
+        powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'ffmpeg.zip')).Dispose(); exit 0 } catch { exit 1 }"
+        if !errorlevel! neq 0 (
+            echo Existing archive is corrupt. Restarting...
+            del /F /Q "ffmpeg.zip"
+        )
+    )
+
     curl.exe -L -C - -o "ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    if exist "ffmpeg-temp" rmdir /S /Q "ffmpeg-temp"
     powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg-temp' -Force"
     copy /Y "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "src-tauri\binaries\ffmpeg-!TARGET!.exe" >nul
     rmdir /S /Q "ffmpeg-temp"

@@ -17,7 +17,7 @@ if ! command -v node &> /dev/null; then echo "❌ Node.js not installed."; exit 
 if ! command -v python3 &> /dev/null; then echo "❌ Python 3 not installed."; exit 1; fi
 
 # --- STAGE 1: REPO LOCATION & GIT PULL ---
-REPO_NAME="spotify_downloader"
+REPO_NAME="d3khan_song_saver"
 if [ -f "package.json" ]; then
     echo "✅ Found repository in current directory."
 elif [ -f "../package.json" ]; then
@@ -28,7 +28,7 @@ elif [ -d "$REPO_NAME" ] && [ -f "$REPO_NAME/package.json" ]; then
     cd "$REPO_NAME"
 else
     echo "📥 Repository not found. Cloning..."
-    git clone https://github.com/d3khan/spotify_downloader.git
+    git clone https://github.com/d3khan/d3khan_song_saver.git
     cd "$REPO_NAME"
 fi
 
@@ -59,11 +59,19 @@ chmod +x "src-tauri/binaries/downloader-$TARGET"
 
 if [ ! -f "src-tauri/binaries/ffmpeg-$TARGET" ]; then
     echo "📥 Downloading static FFmpeg (this may take a minute)..."
-    curl -L -C - -o "ffmpeg-linux.tar.xz" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-    tar -xJf ffmpeg-linux.tar.xz
+    ARCHIVE="ffmpeg-linux.tar.xz"
+    if [ -f "$ARCHIVE" ]; then
+        # Check if archive is corrupt and delete if so
+        if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
+            echo "⚠️ Existing archive is corrupt. Restarting download..."
+            rm -f "$ARCHIVE"
+        fi
+    fi
+    curl -L -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    tar -xJf "$ARCHIVE"
     cp "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg" "src-tauri/binaries/ffmpeg-$TARGET"
     chmod +x "src-tauri/binaries/ffmpeg-$TARGET"
-    rm -rf "ffmpeg-linux.tar.xz" "ffmpeg-master-latest-linux64-gpl"
+    rm -rf "$ARCHIVE" "ffmpeg-master-latest-linux64-gpl"
 else
     echo "✅ FFmpeg is already bundled."
 fi
@@ -96,7 +104,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host "❌ Nod
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Write-Host "❌ Python not installed."; exit 1 }
 
 # --- STAGE 1: REPO LOCATION & GIT PULL ---
-$RepoName = "spotify_downloader"
+$RepoName = "d3khan_song_saver"
 if (Test-Path "package.json") {
     Write-Host "✅ Found repository in current directory." -ForegroundColor Green
 } elseif (Test-Path "..\package.json") {
@@ -105,7 +113,7 @@ if (Test-Path "package.json") {
     Set-Location $RepoName; Write-Host "✅ Found repository in subdirectory. Moved in." -ForegroundColor Green
 } else {
     Write-Host "📥 Repository not found. Cloning..." -ForegroundColor Yellow
-    git clone https://github.com/d3khan/spotify_downloader.git
+    git clone https://github.com/d3khan/d3khan_song_saver.git
     Set-Location $RepoName
 }
 
@@ -143,8 +151,19 @@ if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
     $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     $zipPath = "ffmpeg.zip"
     
+    if (Test-Path $zipPath) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath)).Dispose()
+        } catch {
+            Write-Host "⚠️ Existing archive is corrupt. Restarting download..." -ForegroundColor Yellow
+            Remove-Item -Force $zipPath
+        }
+    }
+
     # Use curl.exe which handles resume (-C -)
     curl.exe -L -C - -o $zipPath $ffmpegUrl
+    if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
     Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
     
     Copy-Item "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "src-tauri\binaries\ffmpeg-$Target.exe" -Force
@@ -186,7 +205,7 @@ where python >nul 2>nul
 if %errorlevel% neq 0 ( echo Python not installed. & pause & exit /b 1 )
 
 :: --- STAGE 1: REPO LOCATION & GIT PULL ---
-set REPO_NAME=spotify_downloader
+set REPO_NAME=d3khan_song_saver
 if exist "package.json" (
     echo Found repository in current directory.
 ) else if exist "..\package.json" (
@@ -197,7 +216,7 @@ if exist "package.json" (
     echo Found repository in subdirectory. Moved in.
 ) else (
     echo Repository not found. Cloning...
-    git clone https://github.com/d3khan/spotify_downloader.git
+    git clone https://github.com/d3khan/d3khan_song_saver.git
     cd %REPO_NAME%
 )
 
@@ -227,7 +246,17 @@ copy /Y "dist\downloader.exe" "src-tauri\binaries\downloader-!TARGET!.exe" >nul
 
 if not exist "src-tauri\binaries\ffmpeg-!TARGET!.exe" (
     echo Downloading static FFmpeg...
+    
+    if exist "ffmpeg.zip" (
+        powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'ffmpeg.zip')).Dispose(); exit 0 } catch { exit 1 }"
+        if !errorlevel! neq 0 (
+            echo Existing archive is corrupt. Restarting...
+            del /F /Q "ffmpeg.zip"
+        )
+    )
+
     curl.exe -L -C - -o "ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    if exist "ffmpeg-temp" rmdir /S /Q "ffmpeg-temp"
     powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg-temp' -Force"
     copy /Y "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "src-tauri\binaries\ffmpeg-!TARGET!.exe" >nul
     rmdir /S /Q "ffmpeg-temp"

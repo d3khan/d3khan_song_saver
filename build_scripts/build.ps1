@@ -6,7 +6,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host "❌ Nod
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Write-Host "❌ Python not installed."; exit 1 }
 
 # --- STAGE 1: REPO LOCATION & GIT PULL ---
-$RepoName = "spotify_downloader"
+$RepoName = "d3khan_song_saver"
 if (Test-Path "package.json") {
     Write-Host "✅ Found repository in current directory." -ForegroundColor Green
 } elseif (Test-Path "..\package.json") {
@@ -15,7 +15,7 @@ if (Test-Path "package.json") {
     Set-Location $RepoName; Write-Host "✅ Found repository in subdirectory. Moved in." -ForegroundColor Green
 } else {
     Write-Host "📥 Repository not found. Cloning..." -ForegroundColor Yellow
-    git clone https://github.com/d3khan/spotify_downloader.git
+    git clone https://github.com/d3khan/d3khan_song_saver.git
     Set-Location $RepoName
 }
 
@@ -53,8 +53,19 @@ if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
     $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     $zipPath = "ffmpeg.zip"
     
+    if (Test-Path $zipPath) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath)).Dispose()
+        } catch {
+            Write-Host "⚠️ Existing archive is corrupt. Restarting download..." -ForegroundColor Yellow
+            Remove-Item -Force $zipPath
+        }
+    }
+
     # Use curl.exe which handles resume (-C -)
     curl.exe -L -C - -o $zipPath $ffmpegUrl
+    if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
     Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
     
     Copy-Item "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "src-tauri\binaries\ffmpeg-$Target.exe" -Force
