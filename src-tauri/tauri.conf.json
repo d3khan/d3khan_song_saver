@@ -28,6 +28,7 @@
     "targets": [
       "nsis",
       "deb",
+      "rpm",
       "appimage"
     ],
     "externalBin": [
