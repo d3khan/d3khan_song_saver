@@ -10,7 +10,6 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ---- Activity Log ----
   function addLog(message, type = "info") {
     const list = $("log-lines");
     const empty = $("log-empty");
@@ -33,31 +32,37 @@
     if (body) body.scrollTop = body.scrollHeight;
   }
 
-  // ---- Tauri Events ----
   if (window.__TAURI__ && window.__TAURI__.event) {
     window.__TAURI__.event.listen("download-progress", (event) => {
-      const { current, total, title, status } = event.payload;
-
-      const progressTitle = $("progress-title");
-      if (progressTitle) progressTitle.textContent = `[${current}/${total}] ${title}: ${status}`;
+      const { percent, status } = event.payload;
 
       const barFill = $("bar-fill");
       if (barFill) {
-        barFill.style.width = `${(current / total) * 100}%`;
+        barFill.style.width = `${percent}%`;
         barFill.classList.remove("is-indeterminate");
       }
 
-      if (status.includes("Waiting")) addLog(`Waiting 5s before downloading ${title}...`, "warn");
-      if (status.includes("Downloading")) addLog(`Downloading ${title}...`, "info");
-      if (status.includes("Tagging")) addLog(`Embedding metadata for ${title}...`, "info");
+      const progressTitle = $("progress-title");
+      if (progressTitle) {
+        progressTitle.textContent = status;
+      }
+
+      if (status.includes("Starting")) addLog(status, "info");
+      if (status.includes("Tagging")) addLog(status, "info");
+      if (status.includes("Finished")) addLog(status, "success");
+      if (status.includes("All done")) addLog(status, "success");
     });
 
     window.__TAURI__.event.listen("download-error", (event) => {
-      addLog(`Error: ${event.payload}`, "error");
+      addLog(event.payload.error, "error");
+    });
+
+    // NEW: Listen for warnings (missing cover art)
+    window.__TAURI__.event.listen("download-log", (event) => {
+      addLog(event.payload.message, "warn");
     });
   }
 
-  // ---- Folder Picker ----
   async function browseFolder() {
     if (!state.isTauri) return alert("Folder picker works only in the Tauri app.");
     try {
@@ -78,7 +83,6 @@
     }
   }
 
-  // ---- Tabs ----
   function setupTabs() {
     const tabSingle = $("tab-single");
     const tabBulk = $("tab-bulk");
@@ -102,7 +106,6 @@
     });
   }
 
-  // ---- Search ----
   async function triggerSearch() {
     const input = $("url-input");
     if (!input) return;
@@ -158,16 +161,13 @@
 
       const imgSrc = track.coverUrl || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18V5l12-2v13'%3E%3C/path%3E%3Ccircle cx='6' cy='18' r='3'%3E%3C/circle%3E%3Ccircle cx='18' cy='16' r='3'%3E%3C/circle%3E%3C/svg%3E";
 
-      let durStr = "";
-      if (track.durationMs > 0) {
-        const mins = Math.floor(track.durationMs / 60000);
-        const secs = Math.floor((track.durationMs % 60000) / 1000);
-        durStr = `${mins}:${secs.toString().padStart(2, "0")}`;
-      }
+      const dur = track.durationMs
+        ? `${Math.floor(track.durationMs / 60000)}:${String(Math.floor((track.durationMs % 60000) / 1000)).padStart(2, "0")}`
+        : "";
 
       const metaParts = [track.artist];
       if (track.year) metaParts.push(track.year);
-      if (durStr) metaParts.push(durStr);
+      if (dur) metaParts.push(dur);
       const metaStr = metaParts.join(" • ");
 
       item.innerHTML = `
@@ -206,7 +206,6 @@
     if (container) container.hidden = true;
   }
 
-  // ---- Modes & Ready State ----
   function setMode() {
     const isSync = $("mode-sync")?.checked;
     state.mode = isSync ? "sync" : "download";
@@ -231,7 +230,6 @@
     startBtn.disabled = !(state.folder && state.selectedTracks.length > 0);
   }
 
-  // ---- Start Download ----
   async function startJob() {
     if (!state.folder) return addLog("Choose an output folder first.", "error");
     if (state.selectedTracks.length === 0) return addLog("Search for and pick a song first.", "error");
@@ -259,7 +257,6 @@
     addLog(`Starting download for ${state.selectedTracks.length} track(s)...`, "info");
 
     try {
-      // THIS NOW WAITS FOR THE ACTUAL DOWNLOAD TO FINISH
       await window.__TAURI__.core.invoke("download_track", {
         tracks: state.selectedTracks,
         outputDir: state.folder,
@@ -269,9 +266,6 @@
         pill.dataset.status = "done";
         pillText.textContent = "Done";
       }
-      const progressTitle = $("progress-title");
-      if (progressTitle) progressTitle.textContent = "Download complete!";
-      addLog("All downloads finished.", "success");
 
     } catch (e) {
       addLog("Download failed: " + e, "error");
@@ -287,7 +281,6 @@
     }
   }
 
-  // ---- Wire up ----
   document.addEventListener("DOMContentLoaded", () => {
     $("browse-btn")?.addEventListener("click", browseFolder);
     $("start-btn")?.addEventListener("click", startJob);

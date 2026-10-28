@@ -537,6 +537,7 @@ version = "0.2.0"
 dependencies = [
  "bincode",
  "chrono",
+ "futures-util",
  "lofty",
  "regex",
  "reqwest 0.12.28",

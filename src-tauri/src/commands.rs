@@ -1,6 +1,6 @@
 use crate::metadata::TrackMeta;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -72,24 +72,12 @@ pub async fn download_track(
         .collect();
 
     let app_clone = app.clone();
-    // Await the batch download so the frontend knows when it's truly finished
-    crate::downloader::download_batch(
-        &app_clone,
-        metas,
-        &out_path,
-        |current, total, title, status| {
-            let _ = app_clone.emit(
-                "download-progress",
-                serde_json::json!({
-                    "current": current,
-                    "total": total,
-                    "title": title,
-                    "status": status,
-                }),
-            );
-        },
-    )
-    .await?;
+
+    // FIX: We use .await here so the UI knows exactly when the batch is finished.
+    // The progress bar is handled entirely inside download_batch now.
+    if let Err(e) = crate::downloader::download_batch(&app_clone, metas, &out_path).await {
+        return Err(format!("Batch download failed: {}", e));
+    }
 
     Ok(())
 }
@@ -100,6 +88,7 @@ pub async fn get_settings() -> Result<Settings, String> {
         source: "none".into(),
     })
 }
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_settings() -> Result<Settings, String> {
     Ok(Settings {

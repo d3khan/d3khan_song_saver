@@ -11,7 +11,6 @@ OK = "[OK]"
 FAIL = "[FAILED]"
 
 def parse_spotify_title(title):
-    """Spotify oEmbed returns 'Artist - Song Name'. Split into artist + track."""
     if not title:
         return "", ""
     if " - " in title:
@@ -20,23 +19,14 @@ def parse_spotify_title(title):
     return "", title.strip()
 
 def has_audio_stream(file_path, ffmpeg_dir=None):
-    """Return (has_audio, duration) by probing the file with ffprobe."""
     ffprobe_cmd = "ffprobe"
-    # If Rust provided an ffmpeg path, look for ffprobe in the same folder
     if ffmpeg_dir:
         potential_ffprobe = os.path.join(ffmpeg_dir, "ffprobe.exe" if os.name == 'nt' else "ffprobe")
         if os.path.exists(potential_ffprobe):
             ffprobe_cmd = potential_ffprobe
-
     try:
         result = subprocess.run(
-            [
-                ffprobe_cmd, "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name,duration",
-                "-of", "csv=p=0",
-                file_path,
-            ],
+            [ffprobe_cmd, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,duration", "-of", "csv=p=0", file_path],
             capture_output=True, text=True, check=True,
         )
         line = result.stdout.strip()
@@ -48,56 +38,87 @@ def has_audio_stream(file_path, ffmpeg_dir=None):
     except Exception:
         return False, 0
 
-def download_track(search_query, out_dir, ffmpeg_path, song, artist):
-    # Build ID3 metadata args so Spotify title/artist are embedded in the MP3
-    metadata_args = []
-    if song: metadata_args += ["-metadata", f"title={song}"]
-    if artist: metadata_args += ["-metadata", f"artist={artist}"]
+def cleanup_leftovers(out_base):
+    for ext in ['.webp', '.png', '.temp.mp3', '.jpg', '.temp.mp4']:
+        leftover = out_base + ext
+        if os.path.exists(leftover):
+            try: os.remove(leftover)
+            except Exception: pass
 
-    pp_list = [
-        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
-        {"key": "FFmpegMetadata"},
-        {"key": "EmbedThumbnail"},
-    ]
+def download_track(search_query, out_base, ffmpeg_path, song, artist):
+    is_youtube = search_query.startswith("http") and ("youtube.com" in search_query or "youtu.be" in search_query)
     
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'writethumbnail': True,
-        'outtmpl': os.path.join(out_dir, '%(title)s.%(ext)s'),
-        'quiet': False,
-        'default_search': 'ytsearch1',
-        'postprocessors': pp_list,
-        'socket_timeout': 30,
-        'retries': 10,
-        'nocheckcertificate': True,
-    }
-    
-    if metadata_args:
-        ydl_opts['postprocessor_args'] = {'FFmpegMetadata': metadata_args}
+    if is_youtube:
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'noplaylist': True,
+            'writethumbnail': True,
+            'convert_thumbnails': 'jpg', # Force JPG
+            'outtmpl': out_base + '.%(ext)s',
+            'quiet': True,
+            'socket_timeout': 30,
+            'retries': 10,
+            'nocheckcertificate': True,
+            'force_ipv4': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}, # Bypass 403
+            'postprocessors': [
+                {"key": "EmbedThumbnail"},
+                {"key": "FFmpegMetadata"},
+            ]
+        }
+    else:
+        metadata_args = []
+        if song: metadata_args += ["-metadata", f"title={song}"]
+        if artist: metadata_args += ["-metadata", f"artist={artist}"]
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'writethumbnail': True,
+            'convert_thumbnails': 'jpg', # Force JPG
+            'outtmpl': out_base + '.%(ext)s',
+            'quiet': True,
+            'socket_timeout': 30,
+            'retries': 10,
+            'nocheckcertificate': True,
+            'force_ipv4': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}, # Bypass 403
+            'postprocessors': [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
+                {"key": "FFmpegMetadata"},
+                {"key": "EmbedThumbnail"},
+            ]
+        }
+        if not search_query.startswith("http"):
+            ydl_opts['default_search'] = 'ytsearch1'
+        if metadata_args:
+            ydl_opts['postprocessor_args'] = {'FFmpegMetadata': metadata_args}
 
     if ffmpeg_path and os.path.exists(ffmpeg_path):
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    print("\nSearching YouTube and downloading...")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(search_query, download=True)
             
-            # yt-dlp appends .mp3 after conversion
-            final_file = ydl.prepare_filename(info)
-            base, _ = os.path.splitext(final_file)
-            final_file = base + ".mp3"
+            filename = ydl.prepare_filename(info)
+            base, ext = os.path.splitext(filename)
+            final_file = base + (".mp4" if is_youtube else ".mp3")
             
             if not os.path.exists(final_file):
-                print(json.dumps({"status": "error", "message": "MP3 not found"}))
+                cleanup_leftovers(out_base)
+                print(json.dumps({"status": "error", "message": f"File not found: {final_file}"}))
                 return
                 
     except Exception as e:
+        # Cleanup even on failure so folders stay tidy
+        cleanup_leftovers(out_base)
         print(json.dumps({"status": "error", "message": str(e)}))
         return
 
-    # 4. Verify the final file actually contains audio
+    cleanup_leftovers(out_base)
+
     ffmpeg_dir = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
     has_audio, duration = has_audio_stream(final_file, ffmpeg_dir)
 
@@ -106,49 +127,30 @@ def download_track(search_query, out_dir, ffmpeg_path, song, artist):
     else:
         print(json.dumps({"status": "error", "message": "No audio stream found in the file!"}))
 
-
 def main():
     if len(sys.argv) >= 4:
-        # --- CALLED BY RUST ---
         query = sys.argv[1]
         out_base = sys.argv[2]
         ffmpeg_path = sys.argv[3]
         song = sys.argv[4] if len(sys.argv) > 4 else ""
         artist = sys.argv[5] if len(sys.argv) > 5 else ""
-        
-        out_dir = os.path.dirname(out_base)
-        os.makedirs(out_dir, exist_ok=True)
-        
-        download_track(query, out_dir, ffmpeg_path, song, artist)
-        
+        download_track(query, out_base, ffmpeg_path, song, artist)
     else:
-        # --- MANUAL TESTING MODE ---
         print("=== Manual Test Mode ===")
-        url = input("Enter Spotify URL: ").strip()
-        ffmpeg = input("Enter FFmpeg Path (or leave empty for system PATH): ").strip()
-        
-        # 1. Fetch Track Metadata from Spotify's oEmbed
-        print("Fetching metadata from Spotify...")
+        url = input("Enter URL: ").strip()
+        ffmpeg = input("Enter FFmpeg Path: ").strip()
         encoded_url = quote(url)
         oembed_url = f"https://open.spotify.com/oembed?url={encoded_url}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        
         response = requests.get(oembed_url, headers=headers, timeout=30)
-        if response.status_code != 200:
-            print(f"Failed to fetch Spotify metadata: HTTP {response.status_code}")
-            return
-            
         data = response.json()
         track_title = data.get("title") or ""
-        print(f"Found track: {track_title}")
-        
         artist, song = parse_spotify_title(track_title)
         search_query = f"{artist} {song}".strip() if artist else track_title
-        
         out_dir = os.path.join(os.getcwd(), "TestDownloads")
         os.makedirs(out_dir, exist_ok=True)
-        
-        download_track(search_query, out_dir, ffmpeg, song, artist)
+        out_base = os.path.join(out_dir, f"{song} - {artist}")
+        download_track(search_query, out_base, ffmpeg, song, artist)
 
 if __name__ == "__main__":
     main()
