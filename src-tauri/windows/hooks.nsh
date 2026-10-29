@@ -45,6 +45,7 @@
   move_ffmpeg:
     DetailPrint "Finalizing FFmpeg installation..."
     Rename /REBOOTOK "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg.exe"
+    Rename /REBOOTOK "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe" "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffprobe.exe"
     RMDir /r "$LOCALAPPDATA\com.d3khan.songsaver\bin\ffmpeg-master-latest-win64-gpl"
     
   ffmpeg_done:

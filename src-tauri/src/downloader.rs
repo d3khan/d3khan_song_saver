@@ -1,10 +1,20 @@
 use crate::metadata::TrackMeta;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::time::{Duration, sleep};
+
+// -------------------- State Struct for Sync --------------------
+
+#[derive(Serialize, Deserialize, Default)]
+struct PlaylistState {
+    playlist_name: String,
+    downloaded_files: HashSet<String>,
+}
 
 // -------------------- Caching --------------------
 
@@ -184,7 +194,7 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
             duration_ms,
             cover_url: playlist_cover.clone(),
             track_number: (i + 1) as u32,
-            folder_name: Some(playlist_name.clone()), // <-- SAVES FOLDER NAME
+            folder_name: Some(playlist_name.clone()),
             ..Default::default()
         });
     }
@@ -239,7 +249,7 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
                 title,
                 artists: vec![uploader],
                 cover_url,
-                folder_name: Some(playlist_name.clone()), // <-- SAVES FOLDER NAME
+                folder_name: Some(playlist_name.clone()),
                 ..Default::default()
             });
         }
@@ -342,7 +352,7 @@ fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
     Some(html[start_idx..start_idx + end_idx].to_string())
 }
 
-// -------------------- Batch Downloader (With Retry Loop) --------------------
+// -------------------- Batch Downloader (With Sync Logic) --------------------
 
 pub async fn download_batch(
     app: &AppHandle,
@@ -386,13 +396,40 @@ pub async fn download_batch(
             format!("{} {}", meta.title, meta.artists.join(", "))
         };
 
-        // --- FOLDER LOGIC ---
+        // --- FOLDER & STATE LOGIC ---
         let mut target_dir = output_dir.to_path_buf();
+        let mut state_file_path = None;
+        let mut state = PlaylistState::default();
+
         if let Some(folder) = &meta.folder_name {
             let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-            target_dir = target_dir.join(safe_folder);
+            target_dir = target_dir.join(&safe_folder);
             std::fs::create_dir_all(&target_dir)
                 .map_err(|e| format!("Failed to create playlist folder: {e}"))?;
+
+            let state_path = target_dir.join(".playlist_sync.json");
+            state_file_path = Some(state_path.clone());
+
+            if state_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&state_path) {
+                    if let Ok(parsed) = serde_json::from_str::<PlaylistState>(&content) {
+                        state = parsed;
+                    }
+                }
+            } else {
+                // Scan directory to build initial state
+                state.playlist_name = folder.clone();
+                if let Ok(entries) = std::fs::read_dir(&target_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.ends_with(".mp3") || name.ends_with(".mp4") {
+                                state.downloaded_files.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+                let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap());
+            }
         }
 
         let safe_title = meta
@@ -403,7 +440,23 @@ pub async fn download_batch(
             .join(", ")
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
 
+        let ext = if is_youtube { "mp4" } else { "mp3" };
+        let expected_filename = format!("{} - {}.{}", safe_title, safe_artist, ext);
         let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
+
+        // --- SKIP IF ALREADY EXISTS ---
+        if state.downloaded_files.contains(&expected_filename)
+            || out_base.with_extension(ext).exists()
+        {
+            let _ = app.emit(
+                "download-progress",
+                json!({
+                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                    "status": format!("Skipped (already exists): {}", meta.title)
+                }),
+            );
+            continue;
+        }
 
         let mut success = false;
         let mut attempts = 0;
@@ -415,7 +468,6 @@ pub async fn download_batch(
                     "percent": (i as f64 / total as f64) * 100.0,
                     "status": format!("Retrying {} (Attempt {}/{})...", meta.title, attempts + 1, max_attempts)
                 }));
-                // Wait 3 seconds before retrying to let Windows Defender release the lock
                 sleep(Duration::from_secs(3)).await;
             } else {
                 let _ = app.emit(
@@ -471,9 +523,21 @@ pub async fn download_batch(
             }
 
             if let Some(err) = error_msg {
-                // If it's a file lock error, we retry. Otherwise, we fail immediately.
-                if err.contains("WinError 32") || err.contains("being used by another process") {
+                if err.contains("WinError 32")
+                    || err.contains("being used by another process")
+                    || err.contains("HTTP Error 416")
+                {
                     attempts += 1;
+                    if err.contains("HTTP Error 416") {
+                        let final_file = out_base.with_extension(ext);
+                        if final_file.exists() {
+                            let _ = std::fs::remove_file(&final_file);
+                        }
+                        let temp_file = out_base.with_extension("temp.mp3");
+                        if temp_file.exists() {
+                            let _ = std::fs::remove_file(&temp_file);
+                        }
+                    }
                     continue;
                 } else {
                     let _ = app.emit(
@@ -495,6 +559,12 @@ pub async fn download_batch(
         }
 
         if success {
+            // Add to state and save
+            if let Some(state_path) = &state_file_path {
+                state.downloaded_files.insert(expected_filename);
+                let _ = std::fs::write(state_path, serde_json::to_string_pretty(&state).unwrap());
+            }
+
             let _ = app.emit(
                 "download-progress",
                 json!({
