@@ -28,22 +28,5 @@ pub struct TrackMeta {
     pub explicit: bool,
     pub cover_url: Option<String>,
     pub position: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)] // ADDED SERDE DERIVES
-pub struct SearchResult {
-    pub id: String,
-    pub title: String,
-    pub artist: String,
-    pub cover_url: Option<String>,
-    pub year: Option<String>,
-    pub duration_ms: u64,
-}
-
-pub fn parse_soundcloud_url(input: &str) -> Result<(CollectionKind, String), String> {
-    if input.contains("/sets/") {
-        Ok((CollectionKind::Playlist, input.to_string()))
-    } else {
-        Ok((CollectionKind::Track, input.to_string()))
-    }
+    pub folder_name: Option<String>,
 }

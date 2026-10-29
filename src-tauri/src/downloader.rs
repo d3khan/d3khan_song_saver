@@ -1,9 +1,12 @@
 use crate::metadata::TrackMeta;
+use regex::Regex;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::time::{Duration, sleep};
+
+// -------------------- Caching --------------------
 
 fn get_cache_path(app: &AppHandle) -> PathBuf {
     let mut path = app
@@ -30,11 +33,24 @@ fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<Tra
     }
 }
 
+// -------------------- Input Router --------------------
+
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
     let trimmed = input.trim();
 
     if trimmed.contains("open.spotify.com/track/") {
         return fetch_spotify_track(trimmed).await;
+    }
+
+    if trimmed.contains("open.spotify.com/playlist/") || trimmed.contains("open.spotify.com/album/")
+    {
+        return fetch_spotify_playlist(trimmed).await;
+    }
+
+    if (trimmed.contains("youtube.com") || trimmed.contains("youtu.be"))
+        && trimmed.contains("list=")
+    {
+        return fetch_youtube_playlist(trimmed).await;
     }
 
     if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
@@ -67,6 +83,7 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
                 album: track.album_name,
                 duration_ms: track.duration_ms as u64,
                 cover_url: None,
+                folder_name: None,
                 ..Default::default()
             });
         }
@@ -80,6 +97,162 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
 
     Err("No tracks found on Spotify for your query.".into())
 }
+
+// -------------------- Spotify Playlist --------------------
+
+async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
+    let id = url
+        .split('/')
+        .last()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&embed_url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    let html = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read page: {e}"))?;
+
+    let script_re =
+        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
+            .unwrap();
+    let script_match = script_re
+        .captures(&html)
+        .ok_or("Could not find track list data on the page. The link may be invalid or private.")?;
+
+    let json_str = &script_match[1];
+    let json: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+
+    let entity = &json["props"]["pageProps"]["state"]["data"]["entity"];
+    let playlist_name = entity["name"]
+        .as_str()
+        .unwrap_or("Unknown Playlist")
+        .to_string();
+    let track_list = entity["trackList"]
+        .as_array()
+        .ok_or("This playlist is empty or could not be parsed.")?;
+
+    if track_list.is_empty() {
+        return Err("The playlist has no tracks.".to_string());
+    }
+
+    let playlist_cover = entity["coverArt"]["sources"]
+        .as_array()
+        .and_then(|sources| sources.first())
+        .and_then(|src| src["url"].as_str())
+        .map(|s| s.to_string());
+
+    let mut mapped = Vec::new();
+    for (i, track) in track_list.iter().enumerate() {
+        let uri = track["uri"].as_str().unwrap_or_default();
+        let title = track["title"]
+            .as_str()
+            .unwrap_or("Unknown Title")
+            .to_string();
+        let artist = track["subtitle"]
+            .as_str()
+            .unwrap_or("Unknown Artist")
+            .to_string();
+        let duration_ms = track["duration"].as_u64().unwrap_or(0);
+
+        if uri.is_empty() {
+            continue;
+        }
+
+        let track_id = uri.split(':').last().unwrap_or_default();
+        let track_url = format!("https://open.spotify.com/track/{}", track_id);
+
+        mapped.push(TrackMeta {
+            id: track_url,
+            title,
+            artists: vec![artist],
+            album: String::new(),
+            duration_ms,
+            cover_url: playlist_cover.clone(),
+            track_number: (i + 1) as u32,
+            folder_name: Some(playlist_name.clone()), // <-- SAVES FOLDER NAME
+            ..Default::default()
+        });
+    }
+
+    Ok(mapped)
+}
+
+// -------------------- YouTube Playlist --------------------
+
+async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
+    let output = std::process::Command::new("yt-dlp")
+        .arg("--flat-playlist")
+        .arg("--dump-json")
+        .arg(url)
+        .output()
+        .map_err(|e| format!("Failed to run yt-dlp for playlist: {e}"))?;
+
+    if !output.status.success() {
+        return Err("yt-dlp failed to fetch YouTube playlist.".to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut mapped = Vec::new();
+    let mut playlist_name = "YouTube Playlist".to_string();
+
+    for (i, line) in stdout.lines().enumerate() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            if i == 0 {
+                if let Some(p_name) = json["playlist_title"].as_str() {
+                    playlist_name = p_name.to_string();
+                }
+            }
+
+            let video_id = json["id"].as_str().unwrap_or_default();
+            if video_id.is_empty() {
+                continue;
+            }
+
+            let title = json["title"]
+                .as_str()
+                .unwrap_or("Unknown Title")
+                .to_string();
+            let uploader = json["uploader"]
+                .as_str()
+                .or_else(|| json["channel"].as_str())
+                .unwrap_or("YouTube")
+                .to_string();
+            let cover_url = Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", video_id));
+
+            mapped.push(TrackMeta {
+                id: format!("https://www.youtube.com/watch?v={}", video_id),
+                title,
+                artists: vec![uploader],
+                cover_url,
+                folder_name: Some(playlist_name.clone()), // <-- SAVES FOLDER NAME
+                ..Default::default()
+            });
+        }
+    }
+
+    if mapped.is_empty() {
+        return Err("Could not extract any tracks from the YouTube playlist.".to_string());
+    }
+
+    Ok(mapped)
+}
+
+// -------------------- Single Tracks --------------------
 
 async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String> {
     let encoded = urlencoding::encode(youtube_url);
@@ -108,17 +281,17 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
         .to_string();
     let cover_url = json["thumbnail_url"].as_str().map(|s| s.to_string());
 
-    return Ok(vec![TrackMeta {
+    Ok(vec![TrackMeta {
         id: youtube_url.to_string(),
         title,
         artists: vec![artist],
         cover_url,
+        folder_name: None,
         ..Default::default()
-    }]);
+    }])
 }
 
 async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String> {
-    // Fetch the Spotify track page directly (oEmbed does not include artist)
     let client = reqwest::Client::new();
 
     let resp = client
@@ -136,11 +309,8 @@ async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String
         .await
         .map_err(|e| format!("Failed to read page: {e}"))?;
 
-    // Parse og:title for song title
     let title = extract_meta_tag(&html, "property=\"og:title\"")
         .unwrap_or_else(|| "Unknown Title".to_string());
-
-    // Parse og:description for artist (format: "Artist · Album · Song · Year" or similar)
     let description = extract_meta_tag(&html, "property=\"og:description\"").unwrap_or_default();
     let artist = description
         .split(" · ")
@@ -149,33 +319,30 @@ async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String
         .unwrap_or("Unknown Artist")
         .trim()
         .to_string();
-
     let cover_url = extract_meta_tag(&html, "property=\"og:image\"");
 
-    return Ok(vec![TrackMeta {
+    Ok(vec![TrackMeta {
         id: spotify_url.to_string(),
         title,
-        artists: if artist.is_empty() || artist == "Unknown Artist" {
-            vec!["Unknown Artist".to_string()]
-        } else {
-            vec![artist]
-        },
+        artists: vec![artist],
         album: String::new(),
         release_date: None,
         cover_url,
         duration_ms: 0,
+        folder_name: None,
         ..Default::default()
-    }]);
+    }])
 }
 
 fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
     let prop_str = prop.trim();
-    // Find the content attribute value in the meta tag that contains this prop
     let search_key = format!("{} content=\"", prop_str);
     let start_idx = html.find(&search_key)? + search_key.len();
     let end_idx = html[start_idx..].find("\"")?;
     Some(html[start_idx..start_idx + end_idx].to_string())
 }
+
+// -------------------- Batch Downloader (With Retry Loop) --------------------
 
 pub async fn download_batch(
     app: &AppHandle,
@@ -189,7 +356,6 @@ pub async fn download_batch(
         .app_local_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."));
 
-    // DYNAMIC OS CHECK FOR FFMPEG NAME
     #[cfg(target_os = "windows")]
     let ffmpeg_name = "ffmpeg.exe";
     #[cfg(not(target_os = "windows"))]
@@ -198,6 +364,10 @@ pub async fn download_batch(
     let mut ffmpeg_path = app_data.join(ffmpeg_name);
     if !ffmpeg_path.exists() {
         ffmpeg_path = app_data.join("bin").join(ffmpeg_name);
+    }
+    #[cfg(target_os = "linux")]
+    if !ffmpeg_path.exists() {
+        ffmpeg_path = PathBuf::from("/usr/lib/d3khan-song-saver/bin").join(ffmpeg_name);
     }
 
     let ffmpeg_str = if ffmpeg_path.exists() {
@@ -216,6 +386,15 @@ pub async fn download_batch(
             format!("{} {}", meta.title, meta.artists.join(", "))
         };
 
+        // --- FOLDER LOGIC ---
+        let mut target_dir = output_dir.to_path_buf();
+        if let Some(folder) = &meta.folder_name {
+            let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+            target_dir = target_dir.join(safe_folder);
+            std::fs::create_dir_all(&target_dir)
+                .map_err(|e| format!("Failed to create playlist folder: {e}"))?;
+        }
+
         let safe_title = meta
             .title
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
@@ -223,84 +402,107 @@ pub async fn download_batch(
             .artists
             .join(", ")
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        let out_base = output_dir.join(format!("{} - {}", safe_title, safe_artist));
 
-        let _ = app.emit(
-            "download-progress",
-            json!({
-                "percent": (i as f64 / total as f64) * 100.0,
-                "status": format!("Starting {}...", meta.title)
-            }),
-        );
+        let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
 
-        let sidecar_command = app
-            .shell()
-            .sidecar("downloader")
-            .map_err(|e| format!("Failed to find sidecar: {e}"))?
-            .args([
-                query.as_str(),
-                out_base.to_string_lossy().as_ref(),
-                ffmpeg_str.as_str(),
-                meta.title.as_str(),
-                meta.artists.join(", ").as_str(),
-            ]);
+        let mut success = false;
+        let mut attempts = 0;
+        let max_attempts = 3;
 
-        let (mut rx, _child) = sidecar_command
-            .spawn()
-            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        while attempts < max_attempts && !success {
+            if attempts > 0 {
+                let _ = app.emit("download-progress", json!({
+                    "percent": (i as f64 / total as f64) * 100.0,
+                    "status": format!("Retrying {} (Attempt {}/{})...", meta.title, attempts + 1, max_attempts)
+                }));
+                // Wait 3 seconds before retrying to let Windows Defender release the lock
+                sleep(Duration::from_secs(3)).await;
+            } else {
+                let _ = app.emit(
+                    "download-progress",
+                    json!({
+                        "percent": (i as f64 / total as f64) * 100.0,
+                        "status": format!("Starting {}...", meta.title)
+                    }),
+                );
+            }
 
-        let mut downloaded_path: Option<PathBuf> = None;
-        let mut error_msg: Option<String> = None;
+            let sidecar_command = app
+                .shell()
+                .sidecar("downloader")
+                .map_err(|e| format!("Failed to find sidecar: {e}"))?
+                .args([
+                    query.as_str(),
+                    out_base.to_string_lossy().as_ref(),
+                    ffmpeg_str.as_str(),
+                    meta.title.as_str(),
+                    meta.artists.join(", ").as_str(),
+                ]);
 
-        while let Some(event) = rx.recv().await {
-            if let tauri_plugin_shell::process::CommandEvent::Stdout(line) = event {
-                let text = String::from_utf8_lossy(&line);
-                if text.contains("\"status\": \"success\"") {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(path_str) = json["path"].as_str() {
-                            downloaded_path = Some(PathBuf::from(path_str));
+            let (mut rx, _child) = sidecar_command
+                .spawn()
+                .map_err(|e| format!("Failed to spawn: {e}"))?;
+
+            let mut downloaded_path: Option<PathBuf> = None;
+            let mut error_msg: Option<String> = None;
+
+            while let Some(event) = rx.recv().await {
+                if let tauri_plugin_shell::process::CommandEvent::Stdout(line) = event {
+                    let text = String::from_utf8_lossy(&line);
+                    if text.contains("\"status\": \"success\"") {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(path_str) = json["path"].as_str() {
+                                downloaded_path = Some(PathBuf::from(path_str));
+                            }
                         }
+                        break;
+                    } else if text.contains("\"status\": \"error\"") {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                            error_msg = Some(
+                                json["message"]
+                                    .as_str()
+                                    .unwrap_or("Unknown error")
+                                    .to_string(),
+                            );
+                        }
+                        break;
                     }
+                }
+            }
+
+            if let Some(err) = error_msg {
+                // If it's a file lock error, we retry. Otherwise, we fail immediately.
+                if err.contains("WinError 32") || err.contains("being used by another process") {
+                    attempts += 1;
+                    continue;
+                } else {
+                    let _ = app.emit(
+                        "download-error",
+                        json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
+                    );
                     break;
-                } else if text.contains("\"status\": \"error\"") {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        error_msg = Some(
-                            json["message"]
-                                .as_str()
-                                .unwrap_or("Unknown error")
-                                .to_string(),
-                        );
+                }
+            }
+
+            if let Some(path) = downloaded_path {
+                if path.exists() {
+                    if let Err(e) = tag_file(app, &path, meta).await {
+                        eprintln!("Failed to finalize {}: {}", meta.title, e);
                     }
-                    break;
+                    success = true;
                 }
             }
         }
 
-        if let Some(err) = error_msg {
+        if success {
             let _ = app.emit(
-                "download-error",
-                json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
+                "download-progress",
+                json!({
+                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                    "status": format!("Finished {}", meta.title)
+                }),
             );
-            continue;
         }
-
-        if let Some(path) = downloaded_path {
-            if path.exists() {
-                // Python already embedded the cover art and tagged the file.
-                // Rust just cleans up the leftover backup .jpg
-                if let Err(e) = tag_file(app, &path, meta).await {
-                    eprintln!("Failed to finalize {}: {}", meta.title, e);
-                }
-            }
-        }
-
-        let _ = app.emit(
-            "download-progress",
-            json!({
-                "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                "status": format!("Finished {}", meta.title)
-            }),
-        );
 
         if i < total - 1 {
             sleep(Duration::from_secs(5)).await;

@@ -39,7 +39,6 @@ def has_audio_stream(file_path, ffmpeg_dir=None):
         return False, 0
 
 def cleanup_leftovers(out_base):
-    # KEEP the .jpg so Rust can use it as a fallback!
     for ext in ['.webp', '.png', '.temp.mp3', '.temp.mp4']:
         leftover = out_base + ext
         if os.path.exists(leftover):
@@ -62,6 +61,7 @@ def download_track(search_query, out_base, ffmpeg_path, song, artist):
             'retries': 10,
             'nocheckcertificate': True,
             'force_ipv4': True,
+            'nopart': True,
             'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             'postprocessors': [
                 {"key": "EmbedThumbnail"},
@@ -84,6 +84,7 @@ def download_track(search_query, out_base, ffmpeg_path, song, artist):
             'retries': 10,
             'nocheckcertificate': True,
             'force_ipv4': True,
+            'nopart': True,
             'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             'postprocessors': [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},

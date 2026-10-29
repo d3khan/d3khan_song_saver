@@ -22,6 +22,7 @@ pub struct TrackResult {
     pub cover_url: Option<String>,
     pub year: Option<String>,
     pub duration_ms: u64,
+    pub folder_name: Option<String>,
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -36,6 +37,37 @@ pub async fn resolve_input(app: AppHandle, input: String) -> Result<Vec<TrackRes
             cover_url: t.cover_url,
             year: t.release_date,
             duration_ms: t.duration_ms,
+            folder_name: t.folder_name,
+        })
+        .collect())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn resolve_bulk_input(
+    app: AppHandle,
+    inputs: Vec<String>,
+) -> Result<Vec<TrackResult>, String> {
+    let mut all_tracks = Vec::new();
+    for input in inputs {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(tracks) = crate::downloader::resolve_input(&app, trimmed).await {
+            all_tracks.extend(tracks);
+        }
+    }
+
+    Ok(all_tracks
+        .into_iter()
+        .map(|t| TrackResult {
+            id: t.id,
+            title: t.title,
+            artist: t.artists.join(", "),
+            cover_url: t.cover_url,
+            year: t.release_date,
+            duration_ms: t.duration_ms,
+            folder_name: t.folder_name,
         })
         .collect())
 }
@@ -67,14 +99,12 @@ pub async fn download_track(
             cover_url: t.cover_url,
             release_date: t.year,
             duration_ms: t.duration_ms,
+            folder_name: t.folder_name,
             ..Default::default()
         })
         .collect();
 
     let app_clone = app.clone();
-
-    // FIX: We use .await here so the UI knows exactly when the batch is finished.
-    // The progress bar is handled entirely inside download_batch now.
     if let Err(e) = crate::downloader::download_batch(&app_clone, metas, &out_path).await {
         return Err(format!("Batch download failed: {}", e));
     }

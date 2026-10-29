@@ -57,7 +57,6 @@
       addLog(event.payload.error, "error");
     });
 
-    // NEW: Listen for warnings (missing cover art)
     window.__TAURI__.event.listen("download-log", (event) => {
       addLog(event.payload.message, "warn");
     });
@@ -107,39 +106,72 @@
   }
 
   async function triggerSearch() {
-    const input = $("url-input");
-    if (!input) return;
-
-    const query = input.value.trim();
-    if (!query) return;
     if (!state.isTauri) return alert("Search requires the Tauri app.");
 
     state.selectedTracks = [];
     checkReady();
-    addLog(`Searching: "${query}"...`, "info");
 
     const container = $("search-results");
     if (!container) return;
 
-    try {
+    const isBulkMode = !$("panel-bulk").hidden;
+
+    if (isBulkMode) {
+      const textarea = $("urls-input");
+      if (!textarea) return;
+
+      const rawText = textarea.value.trim();
+      if (!rawText) return;
+
+      const links = rawText.split("\n").map(l => l.trim()).filter(l => l !== "");
+
+      addLog(`Resolving ${links.length} bulk links...`, "info");
+      container.innerHTML = `<div style="padding: 12px; color: var(--text-dim); text-align: center;">Resolving ${links.length} links...</div>`;
+      container.hidden = false;
+
+      try {
+        const results = await window.__TAURI__.core.invoke("resolve_bulk_input", { inputs: links });
+
+        if (!results || results.length === 0) {
+          container.innerHTML = `<div style="padding: 12px; color: var(--text-dim); text-align: center;">No results found.</div>`;
+          addLog("No results found for bulk links.", "warn");
+          return;
+        }
+
+        addLog(`Found ${results.length} total tracks across all links.`, "success");
+        renderResults(results);
+      } catch (e) {
+        console.error("Bulk search failed:", e);
+        container.innerHTML = `<div style="padding: 12px; color: var(--danger); text-align: center;">Error: ${e}</div>`;
+        addLog(`Bulk search error: ${e}`, "error");
+      }
+    } else {
+      const input = $("url-input");
+      if (!input) return;
+
+      const query = input.value.trim();
+      if (!query) return;
+
+      addLog(`Searching: "${query}"...`, "info");
       container.innerHTML = `<div style="padding: 12px; color: var(--text-dim); text-align: center;">Searching...</div>`;
       container.hidden = false;
 
-      const results = await window.__TAURI__.core.invoke("resolve_input", { input: query });
+      try {
+        const results = await window.__TAURI__.core.invoke("resolve_input", { input: query });
 
-      if (!results || results.length === 0) {
-        container.innerHTML = `<div style="padding: 12px; color: var(--text-dim); text-align: center;">No results found.</div>`;
-        addLog("No results found.", "warn");
-        return;
+        if (!results || results.length === 0) {
+          container.innerHTML = `<div style="padding: 12px; color: var(--text-dim); text-align: center;">No results found.</div>`;
+          addLog("No results found.", "warn");
+          return;
+        }
+
+        addLog(`Found ${results.length} matches.`, "success");
+        renderResults(results);
+      } catch (e) {
+        console.error("Search failed:", e);
+        container.innerHTML = `<div style="padding: 12px; color: var(--danger); text-align: center;">Search error: ${e}</div>`;
+        addLog(`Search error: ${e}`, "error");
       }
-
-      addLog(`Found ${results.length} matches.`, "success");
-      renderResults(results);
-
-    } catch (e) {
-      console.error("Search failed:", e);
-      container.innerHTML = `<div style="padding: 12px; color: var(--danger); text-align: center;">Search error: ${e}</div>`;
-      addLog(`Search error: ${e}`, "error");
     }
   }
 
@@ -187,7 +219,13 @@
         item.style.background = "var(--surface-3)";
         item.style.borderLeft = "3px solid var(--accent)";
 
-        state.selectedTracks = [track];
+        // If it's a playlist (more than 1 track), auto-select all
+        if (results.length > 1) {
+          state.selectedTracks = results;
+        } else {
+          state.selectedTracks = [track];
+        }
+
         const input = $("url-input");
         if (input) input.value = `${track.title} - ${track.artist}`;
 
@@ -197,6 +235,13 @@
 
       container.appendChild(item);
     });
+
+    // If there are multiple tracks (playlist), auto-select them all
+    if (results.length > 1) {
+      state.selectedTracks = results;
+      addLog(`Selected all ${results.length} tracks for download.`, "success");
+      checkReady();
+    }
 
     container.hidden = false;
   }

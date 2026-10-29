@@ -60,6 +60,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::resolve_input,
+            commands::resolve_bulk_input,
             commands::download_track,
             commands::pick_folder,
         ])
