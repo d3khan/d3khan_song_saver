@@ -142,6 +142,22 @@
 
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
 
+  <div id="batch-pause-modal" role="dialog" aria-modal="true" aria-labelledby="batch-pause-title"
+       style="position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); padding: 24px;">
+    <div style="background: var(--surface, #1e1e1e); color: var(--text, #ffffff); border: 1px solid var(--border, #333); border-radius: 12px; max-width: 520px; width: 100%; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
+      <h2 id="batch-pause-title" style="margin: 0 0 12px; font-size: 1.15rem;">YouTube verification needed</h2>
+      <p id="batch-pause-msg" style="margin: 0 0 16px; line-height: 1.5;">YouTube is asking for verification.</p>
+      <ol style="margin: 0 0 20px 20px; padding: 0; line-height: 1.6;">
+        <li>Open YouTube in your browser.</li>
+        <li>Watch any short video (10–20 seconds) so YouTube registers your session.</li>
+        <li>Click <strong>Continue</strong> below to resume the batch.</li>
+      </ol>
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button type="button" id="batch-resume-btn" class="btn primary">Continue</button>
+      </div>
+    </div>
+  </div>
+
   <script src="./app.js"></script>
 </body>
 

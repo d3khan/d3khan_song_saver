@@ -29,4 +29,5 @@ pub struct TrackMeta {
     pub cover_url: Option<String>,
     pub position: usize,
     pub folder_name: Option<String>,
+    pub playlist_url: Option<String>,
 }

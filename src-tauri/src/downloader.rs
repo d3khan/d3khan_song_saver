@@ -1,3 +1,4 @@
+use crate::batch::BatchControl;
 use crate::metadata::TrackMeta;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,19 @@ fn load_cache(app: &AppHandle) -> std::collections::HashMap<String, Vec<TrackMet
     } else {
         std::collections::HashMap::new()
     }
+}
+
+fn is_bot_check(text: &str) -> bool {
+    text.contains("Sign in to confirm")
+        || text.contains("not a bot")
+        || text.contains("LOGIN_REQUIRED")
+        || text.contains("--cookies-from-browser")
+}
+
+fn is_retryable(err: &str) -> bool {
+    err.contains("WinError 32")
+        || err.contains("being used by another process")
+        || err.contains("HTTP Error 416")
 }
 
 fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<TrackMeta>>) {
@@ -195,6 +209,7 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
             cover_url: playlist_cover.clone(),
             track_number: (i + 1) as u32,
             folder_name: Some(playlist_name.clone()),
+            playlist_url: Some(url.to_string()),
             ..Default::default()
         });
     }
@@ -251,6 +266,7 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
                 artists: vec![uploader],
                 cover_url,
                 folder_name: Some(playlist_name.clone()),
+            playlist_url: Some(url.to_string()),
                 ..Default::default()
             });
         }
@@ -355,6 +371,17 @@ fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
 
 // -------------------- Batch Downloader (With Bulletproof Sync) --------------------
 
+fn playlist_display_name(meta: &TrackMeta) -> String {
+    match (meta.folder_name.as_deref(), meta.playlist_url.as_deref()) {
+        (Some(name), Some(url)) if !name.is_empty() && !url.is_empty() => {
+            format!("{} || {}", name, url)
+        }
+        (Some(name), _) => name.to_string(),
+        (None, Some(url)) if !url.is_empty() => format!(" || {}", url),
+        _ => String::new(),
+    }
+}
+
 pub async fn download_batch(
     app: &AppHandle,
     tracks: Vec<TrackMeta>,
@@ -423,20 +450,55 @@ pub async fn download_batch(
             .unwrap_or(true);
 
         if needs_load {
-            let state = if state_path.exists() {
-                std::fs::read_to_string(&state_path)
+            let (mut state, mut upgraded) = if state_path.exists() {
+                match std::fs::read_to_string(&state_path)
                     .ok()
                     .and_then(|c| serde_json::from_str::<PlaylistState>(&c).ok())
-                    .unwrap_or_else(|| PlaylistState {
-                        playlist_name: meta.folder_name.clone().unwrap_or_default(),
-                        downloaded_tracks: HashSet::new(),
-                    })
-            } else {
-                PlaylistState {
-                    playlist_name: meta.folder_name.clone().unwrap_or_default(),
-                    downloaded_tracks: HashSet::new(),
+                {
+                    Some(s) => (s, false),
+                    None => (
+                        PlaylistState {
+                            playlist_name: playlist_display_name(meta),
+                            downloaded_tracks: HashSet::new(),
+                        },
+                        false,
+                    ),
                 }
+            } else {
+                (
+                    PlaylistState {
+                        playlist_name: playlist_display_name(meta),
+                        downloaded_tracks: HashSet::new(),
+                    },
+                    false,
+                )
             };
+
+            // Lazy upgrade: if the file was written by an older version
+            // (playlist_name contains no " || " separator) and we now have
+            // a URL available, upgrade the stored name so future runs have
+            // the URL baked in.
+            if !state.playlist_name.contains(" || ") {
+                if let (Some(name), Some(url)) = (
+                    meta.folder_name.as_deref(),
+                    meta.playlist_url.as_deref(),
+                ) {
+                    if !name.is_empty() && !url.is_empty() {
+                        state.playlist_name = format!("{} || {}", name, url);
+                        upgraded = true;
+                    }
+                }
+            }
+
+            // Persist the upgrade immediately so the file is fixed even if
+            // every track in this batch is skipped.
+            if upgraded {
+                let _ = std::fs::write(
+                    &state_path,
+                    serde_json::to_string_pretty(&state).unwrap(),
+                );
+            }
+
             current_folder_state = Some((state_path.clone(), state));
         }
 
@@ -498,10 +560,21 @@ pub async fn download_batch(
         // ---------------- Download with retries ----------------
         let mut success = false;
         let mut attempts = 0u32;
-        let max_attempts = 3u32;
+        const MAX_ATTEMPTS: u32 = 3;
         let mut error_emitted = false;
+        let mut bot_check_paused_once = false;
 
-        while attempts < max_attempts && !success {
+        // 5-second pre-download wait — only before the first attempt of this track
+        let _ = app.emit(
+            "download-progress",
+            json!({
+                "percent": (i as f64 / total as f64) * 100.0,
+                "status": format!("Waiting 5s before downloading {}...", meta.title)
+            }),
+        );
+        sleep(Duration::from_secs(5)).await;
+
+        while attempts < MAX_ATTEMPTS && !success {
             if attempts > 0 {
                 let _ = app.emit(
                     "download-progress",
@@ -511,7 +584,7 @@ pub async fn download_batch(
                             "Retrying {} (Attempt {}/{})...",
                             meta.title,
                             attempts + 1,
-                            max_attempts
+                            MAX_ATTEMPTS
                         )
                     }),
                 );
@@ -544,6 +617,7 @@ pub async fn download_batch(
 
             let mut downloaded_path: Option<PathBuf> = None;
             let mut error_msg: Option<String> = None;
+            let mut terminated_code: Option<i32> = None;
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -574,18 +648,56 @@ pub async fn download_batch(
                             error_msg = Some(text.trim().to_string());
                         }
                     }
+                    tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                        terminated_code = payload.code;
+                    }
+                    _ => {}
+                }
+            }
+
+            if error_msg.is_none() && downloaded_path.is_none() {
+                match terminated_code {
+                    Some(code) if code != 0 => {
+                        error_msg = Some(format!("Downloader sidecar exited with code {code} without a status message"));
+                    }
+                    None => {
+                        error_msg = Some("Downloader sidecar exited without a status message".to_string());
+                    }
                     _ => {}
                 }
             }
 
             if let Some(err) = error_msg {
-                let retryable = err.contains("WinError 32")
-                    || err.contains("being used by another process")
-                    || err.contains("HTTP Error 416");
+                if is_bot_check(&err) {
+                    if !bot_check_paused_once {
+                        bot_check_paused_once = true;
+                        let _ = app.emit(
+                            "batch-paused",
+                            json!({
+                                "reason": "bot-check",
+                                "title": meta.title,
+                                "message": "YouTube is asking for verification. Watch any short video in your browser, then click Continue."
+                            }),
+                        );
+                        let control = app.state::<BatchControl>();
+                        control.pause();
+                        control.wait_until_resumed().await;
+                        sleep(Duration::from_secs(2)).await;
+                        continue;
+                    } else {
+                        let _ = app.emit(
+                            "download-error",
+                            json!({
+                                "error": format!("YouTube still requires verification for \"{}\". Skipping this track. Watch a video and retry the batch later.", meta.title)
+                            }),
+                        );
+                        error_emitted = true;
+                        break;
+                    }
+                }
 
-                if retryable {
+                if is_retryable(&err) {
                     if err.contains("HTTP Error 416") {
-                        // Clean up partials of any extension the downloader may use
                         if let Some(p) = downloaded_path.as_ref() {
                             let _ = std::fs::remove_file(p);
                         }
@@ -594,9 +706,7 @@ pub async fn download_batch(
                             "temp.mp4",
                         ] {
                             let p = out_base.with_extension(e);
-                            if p.exists() {
-                                let _ = std::fs::remove_file(&p);
-                            }
+                            if p.exists() { let _ = std::fs::remove_file(&p); }
                         }
                     }
                     attempts += 1;
@@ -650,10 +760,7 @@ pub async fn download_batch(
             );
         }
 
-        if i < total - 1 {
-            sleep(Duration::from_secs(5)).await;
         }
-    }
 
     let _ = app.emit(
         "download-progress",

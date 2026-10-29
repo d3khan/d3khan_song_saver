@@ -6,6 +6,7 @@
     folder: null,
     selectedTracks: [],
     mode: "download",
+    isBulkRunning: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -59,6 +60,16 @@
 
     window.__TAURI__.event.listen("download-log", (event) => {
       addLog(event.payload.message, "warn");
+    });
+
+    window.__TAURI__.event.listen("batch-paused", (event) => {
+      const message = (event.payload && event.payload.message)
+        || "YouTube is asking for verification. Watch a short video, then click Continue.";
+      const modal = document.getElementById("batch-pause-modal");
+      const msgEl = document.getElementById("batch-pause-msg");
+      if (msgEl) msgEl.textContent = message;
+      if (modal) modal.style.display = "flex";
+      addLog("⏸ Batch paused: " + message, "warn");
     });
   }
 
@@ -181,7 +192,17 @@
 
     container.innerHTML = "";
 
-    results.forEach(track => {
+    const isBulkMode = !$("panel-bulk").hidden;
+
+    // A "playlist result set" is one where every row belongs to a single
+    // playlist or album — the resolver sets folderName / folder_name on
+    // those. A search result set has NO folder name because each row is an
+    // unrelated song, and the user must pick exactly one.
+    const isPlaylistSet =
+      results.length > 0 &&
+      results.some((r) => Boolean(r.folderName || r.folder_name));
+
+    results.forEach((track) => {
       const item = document.createElement("div");
       item.className = "search-result-item";
       item.style.display = "flex";
@@ -200,7 +221,7 @@
       const metaParts = [track.artist];
       if (track.year) metaParts.push(track.year);
       if (dur) metaParts.push(dur);
-      const metaStr = metaParts.join(" • ");
+      const metaStr = metaParts.filter(Boolean).join(" • ");
 
       item.innerHTML = `
         <img src="${imgSrc}" style="width:48px; height:48px; border-radius:4px; object-fit:cover;">
@@ -211,7 +232,7 @@
       `;
 
       item.addEventListener("click", () => {
-        Array.from(container.children).forEach(c => {
+        Array.from(container.children).forEach((c) => {
           c.style.background = "transparent";
           c.style.borderLeft = "none";
         });
@@ -219,8 +240,9 @@
         item.style.background = "var(--surface-3)";
         item.style.borderLeft = "3px solid var(--accent)";
 
-        // If it's a playlist (more than 1 track), auto-select all
-        if (results.length > 1) {
+        // Playlist or bulk → keep the full set selected.
+        // Search result → select exactly the clicked row.
+        if (isBulkMode || isPlaylistSet) {
           state.selectedTracks = results;
         } else {
           state.selectedTracks = [track];
@@ -236,14 +258,33 @@
       container.appendChild(item);
     });
 
-    // If there are multiple tracks (playlist), auto-select them all
-    if (results.length > 1) {
+    // Auto-select rules:
+    //   • Bulk mode      → select everything (user pasted multiple inputs)
+    //   • Playlist set   → select everything (whole playlist was resolved)
+    //   • Single result  → select it (a single track URL resolved to one track)
+    //   • Search results → DO NOT auto-select; user must click one
+    if (isBulkMode || isPlaylistSet) {
       state.selectedTracks = results;
       addLog(`Selected all ${results.length} tracks for download.`, "success");
       checkReady();
+    } else if (results.length === 1) {
+      state.selectedTracks = results;
+      checkReady();
+    } else {
+      addLog(`Found ${results.length} matches — click one to select it.`, "info");
     }
 
     container.hidden = false;
+
+    // Bulk mode: auto-start once everything is selected and a folder is chosen
+    if (isBulkMode && results.length > 0 && state.folder && !state.isBulkRunning) {
+      state.isBulkRunning = true;
+      Promise.resolve(startJob())
+        .catch((e) => addLog("Auto-start failed: " + e, "error"))
+        .finally(() => {
+          state.isBulkRunning = false;
+        });
+    }
   }
 
   function hideResults() {
@@ -348,6 +389,27 @@
       if (input && results && findBtn && !input.contains(e.target) && !results.contains(e.target) && !findBtn.contains(e.target)) {
         hideResults();
       }
+    });
+
+    // Batch pause/resume handling
+    document.getElementById("batch-resume-btn")?.addEventListener("click", async () => {
+      const modal = document.getElementById("batch-pause-modal");
+      if (modal) modal.style.display = "none";
+      try {
+        await window.__TAURI__.core.invoke("resume_batch");
+        addLog("Resuming batch…", "info");
+      } catch (e) {
+        addLog("Could not resume batch: " + e, "error");
+      }
+    });
+
+    let bulkSearchTimer = null;
+    document.getElementById("urls-input")?.addEventListener("input", () => {
+      clearTimeout(bulkSearchTimer);
+      bulkSearchTimer = setTimeout(() => {
+        const ta = document.getElementById("urls-input");
+        if (ta && ta.value.trim()) triggerSearch();
+      }, 800);
     });
   });
 })();

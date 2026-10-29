@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod commands;
 pub mod downloader;
 pub mod metadata;
@@ -28,6 +29,7 @@ pub fn run() {
                 settings_path,
                 running: AtomicBool::new(false),
             });
+            app.manage(batch::BatchControl::default());
 
             // Create the System Tray
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
@@ -63,6 +65,7 @@ pub fn run() {
             commands::resolve_bulk_input,
             commands::download_track,
             commands::pick_folder,
+            batch::resume_batch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
