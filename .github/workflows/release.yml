@@ -20,7 +20,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
+          cache: 'npm' # Speeds up subsequent builds
+
+      - name: Install frontend dependencies
+        run: npm install # This fixes the "tauri: not found" error
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
