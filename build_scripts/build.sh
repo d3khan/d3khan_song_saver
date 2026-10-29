@@ -45,42 +45,14 @@ else
     echo "✅ Python sidecar is up to date."
 fi
 
-# --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+# --- STAGE 4: PREPARE SIDECAR ---
 mkdir -p src-tauri/binaries
-TARGET=$(rustc -Vv | grep host | cut -d' ' -f2)
+TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
+echo "   Detected Target: $TARGET"
 
 echo "🚚 Moving Python sidecar to Tauri binaries..."
 cp dist/downloader "src-tauri/binaries/downloader-$TARGET"
 chmod +x "src-tauri/binaries/downloader-$TARGET"
-
-if [ ! -f "src-tauri/binaries/ffmpeg-$TARGET" ]; then
-    echo "🔍 FFmpeg binary not found. Checking for existing archive..."
-    ARCHIVE="ffmpeg-linux.tar.xz"
-    
-    if [ -f "$ARCHIVE" ]; then
-        echo "   Found existing archive. Verifying integrity..."
-        if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-            echo "   ⚠️ Existing archive is corrupt. Deleting and restarting..."
-            rm -f "$ARCHIVE"
-        else
-            echo "   ✅ Archive is valid."
-        fi
-    fi
-
-    if [ ! -f "$ARCHIVE" ]; then
-        echo "   📥 Downloading static FFmpeg (this may take a minute)..."
-        curl -L -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-    fi
-
-    echo "   📦 Extracting FFmpeg..."
-    rm -rf "ffmpeg-master-latest-linux64-gpl"
-    tar -xJf "$ARCHIVE"
-    cp "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg" "src-tauri/binaries/ffmpeg-$TARGET"
-    chmod +x "src-tauri/binaries/ffmpeg-$TARGET"
-    rm -rf "$ARCHIVE" "ffmpeg-master-latest-linux64-gpl"
-else
-    echo "✅ FFmpeg is already bundled."
-fi
 
 # --- STAGE 5: NODE & BUILD ---
 if [ ! -d "node_modules" ]; then
@@ -95,5 +67,5 @@ npm run tauri build
 
 echo "📁 Collecting build artifacts..."
 mkdir -p dist_out
-find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} dist_out/ \;
+find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist_out/ \;
 echo "✅ Build complete! Check the 'dist_out/' folder."

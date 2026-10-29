@@ -41,33 +41,12 @@ if not exist "dist\downloader.exe" (
     echo Python sidecar already exists. Skipping PyInstaller.
 )
 
-:: --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+:: --- STAGE 4: PREPARE SIDECAR ---
 if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 for /f "tokens=2" %%i in ('rustc -Vv ^| findstr host') do set TARGET=%%i
 
 echo Moving Python sidecar to Tauri binaries...
 copy /Y "dist\downloader.exe" "src-tauri\binaries\downloader-!TARGET!.exe" >nul
-
-if not exist "src-tauri\binaries\ffmpeg-!TARGET!.exe" (
-    echo Downloading static FFmpeg...
-    
-    if exist "ffmpeg.zip" (
-        powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'ffmpeg.zip')).Dispose(); exit 0 } catch { exit 1 }"
-        if !errorlevel! neq 0 (
-            echo Existing archive is corrupt. Restarting...
-            del /F /Q "ffmpeg.zip"
-        )
-    )
-
-    curl.exe -L -C - -o "ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    if exist "ffmpeg-temp" rmdir /S /Q "ffmpeg-temp"
-    powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg-temp' -Force"
-    copy /Y "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "src-tauri\binaries\ffmpeg-!TARGET!.exe" >nul
-    rmdir /S /Q "ffmpeg-temp"
-    del /F /Q "ffmpeg.zip"
-) else (
-    echo FFmpeg already bundled.
-)
 
 :: --- STAGE 5: NODE & BUILD ---
 if not exist "node_modules" (

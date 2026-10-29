@@ -40,39 +40,13 @@ if ($NeedPyBuild) {
     Write-Host "✅ Python sidecar is up to date." -ForegroundColor Green
 }
 
-# --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+# --- STAGE 4: PREPARE SIDECAR ---
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 $TargetLine = (rustc -Vv | Select-String "host").ToString()
 $Target = $TargetLine.Split(" ")[1]
 
 Write-Host "🚚 Moving Python sidecar to Tauri binaries..." -ForegroundColor Cyan
 Copy-Item -Path "dist\downloader.exe" -Destination "src-tauri\binaries\downloader-$Target.exe" -Force
-
-if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
-    Write-Host "📥 Downloading static FFmpeg (this may take a minute)..." -ForegroundColor Cyan
-    $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    $zipPath = "ffmpeg.zip"
-    
-    if (Test-Path $zipPath) {
-        try {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath)).Dispose()
-        } catch {
-            Write-Host "⚠️ Existing archive is corrupt. Restarting download..." -ForegroundColor Yellow
-            Remove-Item -Force $zipPath
-        }
-    }
-
-    curl.exe -L -C - -o $zipPath $ffmpegUrl
-    if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
-    Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
-    
-    Copy-Item "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "src-tauri\binaries\ffmpeg-$Target.exe" -Force
-    Remove-Item -Recurse -Force "ffmpeg-temp"
-    Remove-Item -Force $zipPath
-} else {
-    Write-Host "✅ FFmpeg is already bundled." -ForegroundColor Green
-}
 
 # --- STAGE 5: NODE & BUILD ---
 if (-not (Test-Path "node_modules")) {
