@@ -13,7 +13,7 @@ use tokio::time::{Duration, sleep};
 #[derive(Serialize, Deserialize, Default)]
 struct PlaylistState {
     playlist_name: String,
-    downloaded_files: HashSet<String>,
+    downloaded_tracks: HashSet<String>, // Stores the unique Track/Video IDs
 }
 
 // -------------------- Caching --------------------
@@ -243,9 +243,10 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
                 .unwrap_or("YouTube")
                 .to_string();
             let cover_url = Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", video_id));
+            let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
 
             mapped.push(TrackMeta {
-                id: format!("https://www.youtube.com/watch?v={}", video_id),
+                id: video_url,
                 title,
                 artists: vec![uploader],
                 cover_url,
@@ -352,7 +353,7 @@ fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
     Some(html[start_idx..start_idx + end_idx].to_string())
 }
 
-// -------------------- Batch Downloader (With Sync Logic) --------------------
+// -------------------- Batch Downloader (With Bulletproof Sync) --------------------
 
 pub async fn download_batch(
     app: &AppHandle,
@@ -403,7 +404,16 @@ pub async fn download_batch(
 
         if let Some(folder) = &meta.folder_name {
             let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-            target_dir = target_dir.join(&safe_folder);
+
+            // Prevent double nesting (e.g. Playlist/Playlist)
+            let current_folder_name = target_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if current_folder_name != safe_folder {
+                target_dir = target_dir.join(&safe_folder);
+            }
+
             std::fs::create_dir_all(&target_dir)
                 .map_err(|e| format!("Failed to create playlist folder: {e}"))?;
 
@@ -417,13 +427,18 @@ pub async fn download_batch(
                     }
                 }
             } else {
-                // Scan directory to build initial state
+                // If state file is missing, scan the folder to avoid re-downloading
                 state.playlist_name = folder.clone();
                 if let Ok(entries) = std::fs::read_dir(&target_dir) {
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
-                            if name.ends_with(".mp3") || name.ends_with(".mp4") {
-                                state.downloaded_files.insert(name.to_string());
+                            // If files exist but state is missing, we add the expected ID
+                            // Note: This is a fallback. The state file is the primary source of truth.
+                            let ext = if is_youtube { ".mp4" } else { ".mp3" };
+                            if name.ends_with(ext)
+                                && name.contains(&meta.title[0..10.min(meta.title.len())])
+                            {
+                                state.downloaded_tracks.insert(meta.id.clone());
                             }
                         }
                     }
@@ -441,13 +456,11 @@ pub async fn download_batch(
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
 
         let ext = if is_youtube { "mp4" } else { "mp3" };
-        let expected_filename = format!("{} - {}.{}", safe_title, safe_artist, ext);
         let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
 
         // --- SKIP IF ALREADY EXISTS ---
-        if state.downloaded_files.contains(&expected_filename)
-            || out_base.with_extension(ext).exists()
-        {
+        // We check BOTH the state file (by ID) and the physical file (by name)
+        if state.downloaded_tracks.contains(&meta.id) || out_base.with_extension(ext).exists() {
             let _ = app.emit(
                 "download-progress",
                 json!({
@@ -455,6 +468,12 @@ pub async fn download_batch(
                     "status": format!("Skipped (already exists): {}", meta.title)
                 }),
             );
+
+            // Ensure the ID is saved in case we found the file physically but it wasn't in the JSON
+            if let Some(state_path) = &state_file_path {
+                state.downloaded_tracks.insert(meta.id.clone());
+                let _ = std::fs::write(state_path, serde_json::to_string_pretty(&state).unwrap());
+            }
             continue;
         }
 
@@ -559,9 +578,9 @@ pub async fn download_batch(
         }
 
         if success {
-            // Add to state and save
+            // Add to state and save immediately
             if let Some(state_path) = &state_file_path {
-                state.downloaded_files.insert(expected_filename);
+                state.downloaded_tracks.insert(meta.id.clone());
                 let _ = std::fs::write(state_path, serde_json::to_string_pretty(&state).unwrap());
             }
 
