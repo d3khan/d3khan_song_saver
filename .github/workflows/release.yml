@@ -17,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Delete the toolchain file on Linux so it doesn't try to use the MSVC target
       - name: Remove rust-toolchain.toml (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: rm rust-toolchain.toml
@@ -26,10 +25,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: 'npm' # Speeds up subsequent builds
+          cache: 'npm'
 
       - name: Install frontend dependencies
-        run: npm install # This fixes the "tauri: not found" error
+        run: npm ci
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -48,7 +47,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller yt-dlp requests
+          pip install --force-reinstall https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz
+          pip install pyinstaller requests
 
       - name: Build Python sidecar
         run: pyinstaller --onefile --name downloader downloader.py
