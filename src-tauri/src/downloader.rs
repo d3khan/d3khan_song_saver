@@ -384,10 +384,9 @@ pub async fn download_batch(
     let ffmpeg_str = if ffmpeg_path.exists() {
         ffmpeg_path.to_string_lossy().to_string()
     } else {
-        "".to_string()
+        String::new()
     };
 
-    // Cache the current folder's state so we don't read/write the file for every single track
     let mut current_folder_state: Option<(PathBuf, PlaylistState)> = None;
 
     for (i, meta) in tracks.iter().enumerate() {
@@ -400,16 +399,14 @@ pub async fn download_batch(
             format!("{} {}", meta.title, meta.artists.join(", "))
         };
 
-        // --- FOLDER & STATE LOGIC ---
+        // ---------------- Resolve target folder ----------------
         let mut target_dir = output_dir.to_path_buf();
-
         if let Some(folder) = &meta.folder_name {
             let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
             let current_folder_name = target_dir
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-
             if current_folder_name != safe_folder {
                 target_dir = target_dir.join(&safe_folder);
             }
@@ -419,39 +416,45 @@ pub async fn download_batch(
 
         let state_path = target_dir.join(".playlist_sync.json");
 
-        // Load state if we haven't already for this folder
-        if current_folder_state.as_ref().map(|(p, _)| p) != Some(&state_path) {
-            let mut state = PlaylistState::default();
-            if state_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&state_path) {
-                    if let Ok(parsed) = serde_json::from_str::<PlaylistState>(&content) {
-                        state = parsed;
-                    }
-                }
+        // ---------------- Load / cache state for this folder ----------------
+        let needs_load = current_folder_state
+            .as_ref()
+            .map(|(p, _)| p != &state_path)
+            .unwrap_or(true);
+
+        if needs_load {
+            let state = if state_path.exists() {
+                std::fs::read_to_string(&state_path)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<PlaylistState>(&c).ok())
+                    .unwrap_or_else(|| PlaylistState {
+                        playlist_name: meta.folder_name.clone().unwrap_or_default(),
+                        downloaded_tracks: HashSet::new(),
+                    })
             } else {
-                // First time scanning this folder, initialize the state
-                state.playlist_name = meta.folder_name.clone().unwrap_or_default();
-                if let Ok(entries) = std::fs::read_dir(&target_dir) {
-                    for entry in entries.flatten() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            let ext = if is_youtube { ".mp4" } else { ".mp3" };
-                            if name.ends_with(ext) {
-                                // If files exist but state is missing, we do a broad match on title
-                                if let Some(title_part) = meta.title.split(" - ").next() {
-                                    if name.contains(title_part) {
-                                        state.downloaded_tracks.insert(meta.id.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+                PlaylistState {
+                    playlist_name: meta.folder_name.clone().unwrap_or_default(),
+                    downloaded_tracks: HashSet::new(),
                 }
-                let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap());
-            }
+            };
             current_folder_state = Some((state_path.clone(), state));
         }
 
         let (_, state) = current_folder_state.as_mut().unwrap();
+
+        // ============================================================
+        // PRIMARY SKIP: ID found in save state -> skip entirely
+        // ============================================================
+        if state.downloaded_tracks.contains(&meta.id) {
+            let _ = app.emit(
+                "download-progress",
+                json!({
+                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                    "status": format!("Skipped (already downloaded): {}", meta.title)
+                }),
+            );
+            continue;
+        }
 
         let safe_title = meta
             .title
@@ -460,36 +463,58 @@ pub async fn download_batch(
             .artists
             .join(", ")
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        let ext = if is_youtube { "mp4" } else { "mp3" };
         let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
 
-        // --- SKIP IF ALREADY EXISTS ---
-        if state.downloaded_tracks.contains(&meta.id) || out_base.with_extension(ext).exists() {
+        // ============================================================
+        // SECONDARY SKIP: file already on disk -> record + skip
+        // (handles .webm/.mkv/.m4a from yt-dlp as well as .mp3)
+        // ============================================================
+        let possible_exts: &[&str] = if is_youtube {
+            &["mp4", "webm", "mkv", "m4a"]
+        } else {
+            &["mp3", "m4a", "opus"]
+        };
+        if let Some(existing) = possible_exts
+            .iter()
+            .map(|e| out_base.with_extension(e))
+            .find(|p| p.exists())
+        {
+            state.downloaded_tracks.insert(meta.id.clone());
+            let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
             let _ = app.emit(
                 "download-progress",
                 json!({
                     "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                    "status": format!("Skipped (already exists): {}", meta.title)
+                    "status": format!(
+                        "Skipped (file exists: {}): {}",
+                        existing.file_name().unwrap_or_default().to_string_lossy(),
+                        meta.title
+                    )
                 }),
             );
-
-            if !state.downloaded_tracks.contains(&meta.id) {
-                state.downloaded_tracks.insert(meta.id.clone());
-                let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap());
-            }
             continue;
         }
 
+        // ---------------- Download with retries ----------------
         let mut success = false;
-        let mut attempts = 0;
-        let max_attempts = 3;
+        let mut attempts = 0u32;
+        let max_attempts = 3u32;
+        let mut error_emitted = false;
 
         while attempts < max_attempts && !success {
             if attempts > 0 {
-                let _ = app.emit("download-progress", json!({
-                    "percent": (i as f64 / total as f64) * 100.0,
-                    "status": format!("Retrying {} (Attempt {}/{})...", meta.title, attempts + 1, max_attempts)
-                }));
+                let _ = app.emit(
+                    "download-progress",
+                    json!({
+                        "percent": (i as f64 / total as f64) * 100.0,
+                        "status": format!(
+                            "Retrying {} (Attempt {}/{})...",
+                            meta.title,
+                            attempts + 1,
+                            max_attempts
+                        )
+                    }),
+                );
                 sleep(Duration::from_secs(3)).await;
             } else {
                 let _ = app.emit(
@@ -520,7 +545,6 @@ pub async fn download_batch(
             let mut downloaded_path: Option<PathBuf> = None;
             let mut error_msg: Option<String> = None;
 
-            // CRITICAL FIX: Listen to both Stdout and Stderr
             while let Some(event) = rx.recv().await {
                 match event {
                     tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
@@ -546,7 +570,6 @@ pub async fn download_batch(
                     }
                     tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
                         let text = String::from_utf8_lossy(&line);
-                        // Catch Python Tracebacks and yt-dlp errors
                         if text.contains("ERROR:") || text.contains("Traceback") {
                             error_msg = Some(text.trim().to_string());
                         }
@@ -556,28 +579,34 @@ pub async fn download_batch(
             }
 
             if let Some(err) = error_msg {
-                if err.contains("WinError 32")
+                let retryable = err.contains("WinError 32")
                     || err.contains("being used by another process")
-                    || err.contains("HTTP Error 416")
-                {
-                    attempts += 1;
+                    || err.contains("HTTP Error 416");
+
+                if retryable {
                     if err.contains("HTTP Error 416") {
-                        let final_file = out_base.with_extension(ext);
-                        if final_file.exists() {
-                            let _ = std::fs::remove_file(&final_file);
+                        // Clean up partials of any extension the downloader may use
+                        if let Some(p) = downloaded_path.as_ref() {
+                            let _ = std::fs::remove_file(p);
                         }
-                        let temp_file = out_base.with_extension("temp.mp3");
-                        if temp_file.exists() {
-                            let _ = std::fs::remove_file(&temp_file);
+                        for e in [
+                            "mp3", "mp4", "webm", "mkv", "m4a", "part", "ytdl", "temp.mp3",
+                            "temp.mp4",
+                        ] {
+                            let p = out_base.with_extension(e);
+                            if p.exists() {
+                                let _ = std::fs::remove_file(&p);
+                            }
                         }
                     }
+                    attempts += 1;
                     continue;
                 } else {
-                    // NOW it will show the actual error in the UI if yt-dlp fails
                     let _ = app.emit(
                         "download-error",
                         json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
                     );
+                    error_emitted = true;
                     break;
                 }
             }
@@ -588,19 +617,35 @@ pub async fn download_batch(
                         eprintln!("Failed to finalize {}: {}", meta.title, e);
                     }
                     success = true;
+                } else {
+                    attempts += 1;
+                    continue;
                 }
+            } else {
+                attempts += 1;
+                continue;
             }
         }
 
         if success {
             state.downloaded_tracks.insert(meta.id.clone());
-            let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap());
+            let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
 
             let _ = app.emit(
                 "download-progress",
                 json!({
                     "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
                     "status": format!("Finished {}", meta.title)
+                }),
+            );
+        } else if !error_emitted {
+            let _ = app.emit(
+                "download-error",
+                json!({
+                    "error": format!(
+                        "Failed to download {} after {} attempts",
+                        meta.title, attempts
+                    )
                 }),
             );
         }
