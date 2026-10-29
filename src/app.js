@@ -47,8 +47,10 @@
       if (progressTitle) {
         progressTitle.textContent = status;
       }
-
+      if (status.includes("Waiting")) addLog(status, "info");
       if (status.includes("Starting")) addLog(status, "info");
+      if (status.includes("Retrying")) addLog(status, "warn");
+      if (status.includes("Skipped")) addLog(status, "info");
       if (status.includes("Tagging")) addLog(status, "info");
       if (status.includes("Finished")) addLog(status, "success");
       if (status.includes("All done")) addLog(status, "success");
