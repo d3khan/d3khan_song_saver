@@ -55,42 +55,14 @@ else
     echo "✅ Python sidecar is up to date."
 fi
 
-# --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+# --- STAGE 4: PREPARE SIDECAR ---
 mkdir -p src-tauri/binaries
-TARGET=$(rustc -Vv | grep host | cut -d' ' -f2)
+TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
+echo "   Detected Target: $TARGET"
 
 echo "🚚 Moving Python sidecar to Tauri binaries..."
 cp dist/downloader "src-tauri/binaries/downloader-$TARGET"
 chmod +x "src-tauri/binaries/downloader-$TARGET"
-
-if [ ! -f "src-tauri/binaries/ffmpeg-$TARGET" ]; then
-    echo "🔍 FFmpeg binary not found. Checking for existing archive..."
-    ARCHIVE="ffmpeg-linux.tar.xz"
-    
-    if [ -f "$ARCHIVE" ]; then
-        echo "   Found existing archive. Verifying integrity..."
-        if ! tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-            echo "   ⚠️ Existing archive is corrupt. Deleting and restarting..."
-            rm -f "$ARCHIVE"
-        else
-            echo "   ✅ Archive is valid."
-        fi
-    fi
-
-    if [ ! -f "$ARCHIVE" ]; then
-        echo "   📥 Downloading static FFmpeg (this may take a minute)..."
-        curl -L -C - -o "$ARCHIVE" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-    fi
-
-    echo "   📦 Extracting FFmpeg..."
-    rm -rf "ffmpeg-master-latest-linux64-gpl"
-    tar -xJf "$ARCHIVE"
-    cp "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg" "src-tauri/binaries/ffmpeg-$TARGET"
-    chmod +x "src-tauri/binaries/ffmpeg-$TARGET"
-    rm -rf "$ARCHIVE" "ffmpeg-master-latest-linux64-gpl"
-else
-    echo "✅ FFmpeg is already bundled."
-fi
 
 # --- STAGE 5: NODE & BUILD ---
 if [ ! -d "node_modules" ]; then
@@ -105,10 +77,13 @@ npm run tauri build
 
 echo "📁 Collecting build artifacts..."
 mkdir -p dist_out
-find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} dist_out/ \;
+find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist_out/ \;
 echo "✅ Build complete! Check the 'dist_out/' folder."
 """
-    # (Windows scripts remain exactly as they were)
+
+    # ==========================================
+    # 2. WINDOWS POWERSHELL SCRIPT
+    # ==========================================
     ps1_script = r"""$ErrorActionPreference = "Stop"
 
 Write-Host "🔍 Checking prerequisites..." -ForegroundColor Cyan
@@ -151,39 +126,13 @@ if ($NeedPyBuild) {
     Write-Host "✅ Python sidecar is up to date." -ForegroundColor Green
 }
 
-# --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+# --- STAGE 4: PREPARE SIDECAR ---
 New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
 $TargetLine = (rustc -Vv | Select-String "host").ToString()
 $Target = $TargetLine.Split(" ")[1]
 
 Write-Host "🚚 Moving Python sidecar to Tauri binaries..." -ForegroundColor Cyan
 Copy-Item -Path "dist\downloader.exe" -Destination "src-tauri\binaries\downloader-$Target.exe" -Force
-
-if (-not (Test-Path "src-tauri\binaries\ffmpeg-$Target.exe")) {
-    Write-Host "📥 Downloading static FFmpeg (this may take a minute)..." -ForegroundColor Cyan
-    $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    $zipPath = "ffmpeg.zip"
-    
-    if (Test-Path $zipPath) {
-        try {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath)).Dispose()
-        } catch {
-            Write-Host "⚠️ Existing archive is corrupt. Restarting download..." -ForegroundColor Yellow
-            Remove-Item -Force $zipPath
-        }
-    }
-
-    curl.exe -L -C - -o $zipPath $ffmpegUrl
-    if (Test-Path "ffmpeg-temp") { Remove-Item -Recurse -Force "ffmpeg-temp" }
-    Expand-Archive -Path $zipPath -DestinationPath "ffmpeg-temp" -Force
-    
-    Copy-Item "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" -Destination "src-tauri\binaries\ffmpeg-$Target.exe" -Force
-    Remove-Item -Recurse -Force "ffmpeg-temp"
-    Remove-Item -Force $zipPath
-} else {
-    Write-Host "✅ FFmpeg is already bundled." -ForegroundColor Green
-}
 
 # --- STAGE 5: NODE & BUILD ---
 if (-not (Test-Path "node_modules")) {
@@ -203,6 +152,9 @@ Copy-Item "src-tauri\target\release\bundle\nsis\*.exe" -Destination "dist_out\" 
 Write-Host "✅ Build complete! Check the 'dist_out/' folder." -ForegroundColor Green
 """
 
+    # ==========================================
+    # 3. WINDOWS CMD SCRIPT
+    # ==========================================
     bat_script = r"""@echo off
 setlocal enabledelayedexpansion
 
@@ -246,33 +198,12 @@ if not exist "dist\downloader.exe" (
     echo Python sidecar already exists. Skipping PyInstaller.
 )
 
-:: --- STAGE 4: PREPARE BINARIES & FFMPEG ---
+:: --- STAGE 4: PREPARE SIDECAR ---
 if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 for /f "tokens=2" %%i in ('rustc -Vv ^| findstr host') do set TARGET=%%i
 
 echo Moving Python sidecar to Tauri binaries...
 copy /Y "dist\downloader.exe" "src-tauri\binaries\downloader-!TARGET!.exe" >nul
-
-if not exist "src-tauri\binaries\ffmpeg-!TARGET!.exe" (
-    echo Downloading static FFmpeg...
-    
-    if exist "ffmpeg.zip" (
-        powershell -Command "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'ffmpeg.zip')).Dispose(); exit 0 } catch { exit 1 }"
-        if !errorlevel! neq 0 (
-            echo Existing archive is corrupt. Restarting...
-            del /F /Q "ffmpeg.zip"
-        )
-    )
-
-    curl.exe -L -C - -o "ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    if exist "ffmpeg-temp" rmdir /S /Q "ffmpeg-temp"
-    powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg-temp' -Force"
-    copy /Y "ffmpeg-temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "src-tauri\binaries\ffmpeg-!TARGET!.exe" >nul
-    rmdir /S /Q "ffmpeg-temp"
-    del /F /Q "ffmpeg.zip"
-) else (
-    echo FFmpeg already bundled.
-)
 
 :: --- STAGE 5: NODE & BUILD ---
 if not exist "node_modules" (
