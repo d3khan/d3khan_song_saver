@@ -1,7 +1,6 @@
 use crate::metadata::TrackMeta;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize, Default, Clone, Debug)]
 pub struct Settings {
@@ -76,14 +75,20 @@ pub async fn resolve_bulk_input(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
-    let folder = app
-        .dialog()
-        .file()
-        .set_title("Choose output folder")
-        .blocking_pick_folder();
+pub async fn pick_folder(_app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    return Err("Folder picking is not supported on Android".to_string());
 
-    Ok(folder.map(|p| p.to_string()))
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        let folder = _app
+            .dialog()
+            .file()
+            .set_title("Choose output folder")
+            .blocking_pick_folder();
+        Ok(folder.map(|p| p.to_string()))
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]

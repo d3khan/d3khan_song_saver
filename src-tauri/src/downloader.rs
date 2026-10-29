@@ -6,6 +6,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(not(target_os = "android"))]
 use tauri_plugin_shell::ShellExt;
 use tokio::time::{Duration, sleep};
 
@@ -417,6 +418,7 @@ pub async fn download_batch(
         ffmpeg_path = PathBuf::from("/usr/lib/d3khan-song-saver/bin").join(ffmpeg_name);
     }
 
+    #[allow(unused_variables)]
     let ffmpeg_str = if ffmpeg_path.exists() {
         ffmpeg_path.to_string_lossy().to_string()
     } else {
@@ -614,39 +616,29 @@ pub async fn download_batch(
                 );
             }
 
-            let sidecar_command = app
-                .shell()
-                .sidecar("downloader")
-                .map_err(|e| format!("Failed to find sidecar: {e}"))?
-                .args([
-                    query.as_str(),
-                    out_base.to_string_lossy().as_ref(),
-                    ffmpeg_str.as_str(),
-                    meta.title.as_str(),
-                    meta.artists.join(", ").as_str(),
-                ]);
-
-            let (mut rx, _child) = sidecar_command
-                .spawn()
-                .map_err(|e| format!("Failed to spawn: {e}"))?;
-
             let mut downloaded_path: Option<PathBuf> = None;
             let mut error_msg: Option<String> = None;
+            #[allow(unused_mut)]
             let mut terminated_code: Option<i32> = None;
 
-            while let Some(event) = rx.recv().await {
-                match event {
-                    tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        if text.contains("\"status\": \"success\"") {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if let Some(path_str) = json["path"].as_str() {
-                                    downloaded_path = Some(PathBuf::from(path_str));
-                                }
-                            }
-                            break;
-                        } else if text.contains("\"status\": \"error\"") {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+            #[cfg(target_os = "android")]
+            {
+                let payload = serde_json::json!({
+                    "query": query,
+                    "out_base": out_base.to_string_lossy(),
+                    "song": meta.title,
+                    "artist": meta.artists.join(", ")
+                });
+                let plugin_handle = app.state::<tauri::plugin::PluginHandle<tauri::Wry>>();
+                match plugin_handle.run_mobile_plugin::<serde_json::Value>("downloadTrack", payload)
+                {
+                    Ok(response) => {
+                        let result_str = response["result"].as_str().unwrap_or("");
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(result_str) {
+                            if json["status"] == "success" {
+                                downloaded_path =
+                                    Some(PathBuf::from(json["path"].as_str().unwrap_or("")));
+                            } else {
                                 error_msg = Some(
                                     json["message"]
                                         .as_str()
@@ -654,19 +646,74 @@ pub async fn download_batch(
                                         .to_string(),
                                 );
                             }
-                            break;
+                        } else {
+                            error_msg = Some("Failed to parse Python JSON response".to_string());
                         }
                     }
-                    tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        if text.contains("ERROR:") || text.contains("Traceback") {
-                            error_msg = Some(text.trim().to_string());
+                    Err(e) => {
+                        error_msg = Some(format!("Plugin error: {}", e));
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let sidecar_command = app
+                    .shell()
+                    .sidecar("downloader")
+                    .map_err(|e| format!("Failed to find sidecar: {e}"))?
+                    .args([
+                        query.as_str(),
+                        out_base.to_string_lossy().as_ref(),
+                        ffmpeg_str.as_str(),
+                        meta.title.as_str(),
+                        meta.artists.join(", ").as_str(),
+                    ]);
+
+                let (mut rx, _child) = sidecar_command
+                    .spawn()
+                    .map_err(|e| format!("Failed to spawn: {e}"))?;
+
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                            let text = String::from_utf8_lossy(&line);
+                            if text.contains("\"status\": \"success\"") {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if let Some(path_str) = json["path"].as_str() {
+                                        downloaded_path = Some(PathBuf::from(path_str));
+                                    }
+                                }
+                                break;
+                            } else if text.contains("\"status\": \"error\"") {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    error_msg = Some(
+                                        json["message"]
+                                            .as_str()
+                                            .unwrap_or("Unknown error")
+                                            .to_string(),
+                                    );
+                                }
+                                break;
+                            }
                         }
+                        tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                            let text = String::from_utf8_lossy(&line);
+                            if text.contains("ERROR:") || text.contains("Traceback") {
+                                error_msg = Some(text.trim().to_string());
+                            }
+                        }
+                        tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                            terminated_code = payload.code;
+                            if payload.code != Some(0) && error_msg.is_none() {
+                                error_msg = Some(format!(
+                                    "Downloader sidecar exited with code {:?}",
+                                    payload.code
+                                ));
+                            }
+                        }
+                        _ => {}
                     }
-                    tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
-                        terminated_code = payload.code;
-                    }
-                    _ => {}
                 }
             }
 
