@@ -1,6 +1,6 @@
 [package]
 name = "d3khan-song-saver"
-version = "0.2.0"
+version = "0.2.1"
 description = "d3khan song saver"
 authors = ["d3khan"]
 edition = "2024"
