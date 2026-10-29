@@ -47,6 +47,7 @@
       if (progressTitle) {
         progressTitle.textContent = status;
       }
+
       if (status.includes("Waiting")) addLog(status, "info");
       if (status.includes("Starting")) addLog(status, "info");
       if (status.includes("Retrying")) addLog(status, "warn");
@@ -196,10 +197,6 @@
 
     const isBulkMode = !$("panel-bulk").hidden;
 
-    // A "playlist result set" is one where every row belongs to a single
-    // playlist or album — the resolver sets folderName / folder_name on
-    // those. A search result set has NO folder name because each row is an
-    // unrelated song, and the user must pick exactly one.
     const isPlaylistSet =
       results.length > 0 &&
       results.some((r) => Boolean(r.folderName || r.folder_name));
@@ -242,8 +239,6 @@
         item.style.background = "var(--surface-3)";
         item.style.borderLeft = "3px solid var(--accent)";
 
-        // Playlist or bulk → keep the full set selected.
-        // Search result → select exactly the clicked row.
         if (isBulkMode || isPlaylistSet) {
           state.selectedTracks = results;
         } else {
@@ -260,11 +255,6 @@
       container.appendChild(item);
     });
 
-    // Auto-select rules:
-    //   • Bulk mode      → select everything (user pasted multiple inputs)
-    //   • Playlist set   → select everything (whole playlist was resolved)
-    //   • Single result  → select it (a single track URL resolved to one track)
-    //   • Search results → DO NOT auto-select; user must click one
     if (isBulkMode || isPlaylistSet) {
       state.selectedTracks = results;
       addLog(`Selected all ${results.length} tracks for download.`, "success");
@@ -278,7 +268,6 @@
 
     container.hidden = false;
 
-    // Bulk mode: auto-start once everything is selected and a folder is chosen
     if (isBulkMode && results.length > 0 && state.folder && !state.isBulkRunning) {
       state.isBulkRunning = true;
       Promise.resolve(startJob())
@@ -305,7 +294,7 @@
         textEl.textContent = "Compares local files, skips existing tracks, downloads new ones.";
         if (startBtn) startBtn.textContent = "Start sync";
       } else {
-        textEl.textContent = "Downloads all selected files directly.";
+        textEl.textContent = "Overwrites existing files and downloads every selected track.";
         if (startBtn) startBtn.textContent = "Start download";
       }
     }
@@ -342,12 +331,13 @@
       barFill.style.width = "0%";
     }
 
-    addLog(`Starting download for ${state.selectedTracks.length} track(s)...`, "info");
+    addLog(`Starting download for ${state.selectedTracks.length} track(s) [${state.mode} mode]...`, "info");
 
     try {
       await window.__TAURI__.core.invoke("download_track", {
         tracks: state.selectedTracks,
         outputDir: state.folder,
+        mode: state.mode,   // "download" | "sync"
       });
 
       if (pill && pillText) {
@@ -393,7 +383,6 @@
       }
     });
 
-    // Batch pause/resume handling
     document.getElementById("batch-resume-btn")?.addEventListener("click", async () => {
       const modal = document.getElementById("batch-pause-modal");
       if (modal) modal.style.display = "none";

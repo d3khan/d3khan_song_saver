@@ -14,7 +14,7 @@ use tokio::time::{Duration, sleep};
 #[derive(Serialize, Deserialize, Default)]
 struct PlaylistState {
     playlist_name: String,
-    downloaded_tracks: HashSet<String>, // Stores the unique Track/Video IDs
+    downloaded_tracks: HashSet<String>,
 }
 
 // -------------------- Caching --------------------
@@ -35,19 +35,6 @@ fn load_cache(app: &AppHandle) -> std::collections::HashMap<String, Vec<TrackMet
     } else {
         std::collections::HashMap::new()
     }
-}
-
-fn is_bot_check(text: &str) -> bool {
-    text.contains("Sign in to confirm")
-        || text.contains("not a bot")
-        || text.contains("LOGIN_REQUIRED")
-        || text.contains("--cookies-from-browser")
-}
-
-fn is_retryable(err: &str) -> bool {
-    err.contains("WinError 32")
-        || err.contains("being used by another process")
-        || err.contains("HTTP Error 416")
 }
 
 fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<TrackMeta>>) {
@@ -266,7 +253,7 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
                 artists: vec![uploader],
                 cover_url,
                 folder_name: Some(playlist_name.clone()),
-            playlist_url: Some(url.to_string()),
+                playlist_url: Some(url.to_string()),
                 ..Default::default()
             });
         }
@@ -369,7 +356,20 @@ fn extract_meta_tag(html: &str, prop: &str) -> Option<String> {
     Some(html[start_idx..start_idx + end_idx].to_string())
 }
 
-// -------------------- Batch Downloader (With Bulletproof Sync) --------------------
+// -------------------- Helpers --------------------
+
+fn is_bot_check(text: &str) -> bool {
+    text.contains("Sign in to confirm")
+        || text.contains("not a bot")
+        || text.contains("LOGIN_REQUIRED")
+        || text.contains("--cookies-from-browser")
+}
+
+fn is_retryable(err: &str) -> bool {
+    err.contains("WinError 32")
+        || err.contains("being used by another process")
+        || err.contains("HTTP Error 416")
+}
 
 fn playlist_display_name(meta: &TrackMeta) -> String {
     match (meta.folder_name.as_deref(), meta.playlist_url.as_deref()) {
@@ -382,10 +382,19 @@ fn playlist_display_name(meta: &TrackMeta) -> String {
     }
 }
 
+// -------------------- Batch Downloader --------------------
+//
+// `overwrite_mode` == true  → skip *all* existence checks (state JSON + file
+//                              on disk), delete any existing file first, then
+//                              download unconditionally.
+// `overwrite_mode` == false → original sync behaviour: skip tracks present
+//                              in the state JSON or already on disk.
+
 pub async fn download_batch(
     app: &AppHandle,
     tracks: Vec<TrackMeta>,
     output_dir: &Path,
+    overwrite_mode: bool,
 ) -> Result<(), String> {
     let total = tracks.len();
 
@@ -474,15 +483,10 @@ pub async fn download_batch(
                 )
             };
 
-            // Lazy upgrade: if the file was written by an older version
-            // (playlist_name contains no " || " separator) and we now have
-            // a URL available, upgrade the stored name so future runs have
-            // the URL baked in.
             if !state.playlist_name.contains(" || ") {
-                if let (Some(name), Some(url)) = (
-                    meta.folder_name.as_deref(),
-                    meta.playlist_url.as_deref(),
-                ) {
+                if let (Some(name), Some(url)) =
+                    (meta.folder_name.as_deref(), meta.playlist_url.as_deref())
+                {
                     if !name.is_empty() && !url.is_empty() {
                         state.playlist_name = format!("{} || {}", name, url);
                         upgraded = true;
@@ -490,33 +494,14 @@ pub async fn download_batch(
                 }
             }
 
-            // Persist the upgrade immediately so the file is fixed even if
-            // every track in this batch is skipped.
             if upgraded {
-                let _ = std::fs::write(
-                    &state_path,
-                    serde_json::to_string_pretty(&state).unwrap(),
-                );
+                let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap());
             }
 
             current_folder_state = Some((state_path.clone(), state));
         }
 
         let (_, state) = current_folder_state.as_mut().unwrap();
-
-        // ============================================================
-        // PRIMARY SKIP: ID found in save state -> skip entirely
-        // ============================================================
-        if state.downloaded_tracks.contains(&meta.id) {
-            let _ = app.emit(
-                "download-progress",
-                json!({
-                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                    "status": format!("Skipped (already downloaded): {}", meta.title)
-                }),
-            );
-            continue;
-        }
 
         let safe_title = meta
             .title
@@ -527,34 +512,64 @@ pub async fn download_batch(
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
 
-        // ============================================================
-        // SECONDARY SKIP: file already on disk -> record + skip
-        // (handles .webm/.mkv/.m4a from yt-dlp as well as .mp3)
-        // ============================================================
         let possible_exts: &[&str] = if is_youtube {
             &["mp4", "webm", "mkv", "m4a"]
         } else {
             &["mp3", "m4a", "opus"]
         };
-        if let Some(existing) = possible_exts
-            .iter()
-            .map(|e| out_base.with_extension(e))
-            .find(|p| p.exists())
-        {
-            state.downloaded_tracks.insert(meta.id.clone());
-            let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
-            let _ = app.emit(
-                "download-progress",
-                json!({
-                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
-                    "status": format!(
-                        "Skipped (file exists: {}): {}",
-                        existing.file_name().unwrap_or_default().to_string_lossy(),
-                        meta.title
-                    )
-                }),
-            );
-            continue;
+
+        if !overwrite_mode {
+            // ---------------- PRIMARY SKIP (sync mode only) ----------------
+            if state.downloaded_tracks.contains(&meta.id) {
+                let _ = app.emit(
+                    "download-progress",
+                    json!({
+                        "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                        "status": format!("Skipped (already downloaded): {}", meta.title)
+                    }),
+                );
+                continue;
+            }
+
+            // ---------------- SECONDARY SKIP (sync mode only) ----------------
+            if let Some(existing) = possible_exts
+                .iter()
+                .map(|e| out_base.with_extension(e))
+                .find(|p| p.exists())
+            {
+                state.downloaded_tracks.insert(meta.id.clone());
+                let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
+                let _ = app.emit(
+                    "download-progress",
+                    json!({
+                        "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                        "status": format!(
+                            "Skipped (file exists: {}): {}",
+                            existing.file_name().unwrap_or_default().to_string_lossy(),
+                            meta.title
+                        )
+                    }),
+                );
+                continue;
+            }
+        } else {
+            // ---------------- OVERWRITE MODE: wipe existing files first ----------------
+            // This guarantees the sidecar writes a fresh copy instead of
+            // failing with "file already exists" or silently reusing the old
+            // file. If the subsequent download fails, the old file is gone —
+            // that's the point of overwrite mode.
+            for ext in possible_exts {
+                let p = out_base.with_extension(ext);
+                if p.exists() {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+            for ext in ["part", "ytdl", "temp.mp3", "temp.mp4"] {
+                let p = out_base.with_extension(ext);
+                if p.exists() {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
         }
 
         // ---------------- Download with retries ----------------
@@ -658,10 +673,13 @@ pub async fn download_batch(
             if error_msg.is_none() && downloaded_path.is_none() {
                 match terminated_code {
                     Some(code) if code != 0 => {
-                        error_msg = Some(format!("Downloader sidecar exited with code {code} without a status message"));
+                        error_msg = Some(format!(
+                            "Downloader sidecar exited with code {code} without a status message"
+                        ));
                     }
                     None => {
-                        error_msg = Some("Downloader sidecar exited without a status message".to_string());
+                        error_msg =
+                            Some("Downloader sidecar exited without a status message".to_string());
                     }
                     _ => {}
                 }
@@ -706,19 +724,21 @@ pub async fn download_batch(
                             "temp.mp4",
                         ] {
                             let p = out_base.with_extension(e);
-                            if p.exists() { let _ = std::fs::remove_file(&p); }
+                            if p.exists() {
+                                let _ = std::fs::remove_file(&p);
+                            }
                         }
                     }
                     attempts += 1;
                     continue;
-                } else {
-                    let _ = app.emit(
-                        "download-error",
-                        json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
-                    );
-                    error_emitted = true;
-                    break;
                 }
+
+                let _ = app.emit(
+                    "download-error",
+                    json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
+                );
+                error_emitted = true;
+                break;
             }
 
             if let Some(path) = downloaded_path {
@@ -738,6 +758,8 @@ pub async fn download_batch(
         }
 
         if success {
+            // Keep the state file in sync in *both* modes so switching to
+            // sync mode later still sees a truthful record of what's on disk.
             state.downloaded_tracks.insert(meta.id.clone());
             let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
 
@@ -759,8 +781,7 @@ pub async fn download_batch(
                 }),
             );
         }
-
-        }
+    }
 
     let _ = app.emit(
         "download-progress",

@@ -28,6 +28,7 @@ pub struct TrackResult {
 #[tauri::command(rename_all = "camelCase")]
 pub async fn resolve_input(app: AppHandle, input: String) -> Result<Vec<TrackResult>, String> {
     let tracks = crate::downloader::resolve_input(&app, &input).await?;
+
     Ok(tracks
         .into_iter()
         .map(|t| TrackResult {
@@ -48,11 +49,13 @@ pub async fn resolve_bulk_input(
     inputs: Vec<String>,
 ) -> Result<Vec<TrackResult>, String> {
     let mut all_tracks = Vec::new();
+
     for input in inputs {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             continue;
         }
+
         if let Ok(tracks) = crate::downloader::resolve_input(&app, trimmed).await {
             all_tracks.extend(tracks);
         }
@@ -79,6 +82,7 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
         .file()
         .set_title("Choose output folder")
         .blocking_pick_folder();
+
     Ok(folder.map(|p| p.to_string()))
 }
 
@@ -87,8 +91,14 @@ pub async fn download_track(
     app: AppHandle,
     tracks: Vec<TrackResult>,
     output_dir: String,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let out_path = std::path::PathBuf::from(&output_dir);
+
+    // Overwrite is true only when the frontend explicitly passes "download".
+    // Anything else (missing, "sync", "download-but-typo") keeps the safe
+    // skip-based behaviour of sync mode.
+    let overwrite = mode.as_deref() == Some("download");
 
     let metas: Vec<TrackMeta> = tracks
         .into_iter()
@@ -105,7 +115,8 @@ pub async fn download_track(
         .collect();
 
     let app_clone = app.clone();
-    if let Err(e) = crate::downloader::download_batch(&app_clone, metas, &out_path).await {
+    if let Err(e) = crate::downloader::download_batch(&app_clone, metas, &out_path, overwrite).await
+    {
         return Err(format!("Batch download failed: {}", e));
     }
 
