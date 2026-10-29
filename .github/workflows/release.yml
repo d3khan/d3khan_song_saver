@@ -17,6 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Delete the toolchain file on Linux so it doesn't try to use the MSVC target
+      - name: Remove rust-toolchain.toml (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: rm rust-toolchain.toml
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
