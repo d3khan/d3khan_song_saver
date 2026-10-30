@@ -26,21 +26,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun ensureBinary(name: String) {
-        val target = File(activity.codeCacheDir, name)
-        if (!target.exists() || target.length() == 0L) {
-            activity.assets.open(name).use { input ->
-                target.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        }
-        // Set global executable permissions
-        target.setReadable(true, false)
-        target.setWritable(true, false)
-        target.setExecutable(true, false)
-    }
-
     @Command
     fun downloadTrack(invoke: Invoke) {
         try {
@@ -51,48 +36,51 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val artist = args.getString("artist")
 
             ensurePython()
-            ensureBinary("ffmpeg")
-            ensureBinary("ffprobe")
 
             val python = Python.getInstance()
-            val ffmpegDir = activity.codeCacheDir.absolutePath
-            // We no longer need the full file path, we pass the directory
-            // val ffmpegPath = File(activity.codeCacheDir, "ffmpeg").absolutePath
+            // Get the read-only native library directory (e.g., /data/app/.../lib/arm64)
+            val nativeLibDir = activity.applicationInfo.nativeLibraryDir
 
             val os = python.getModule("os")
             val environ = os.get("environ")!!
+            // Make sure the native dir is in PATH
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
-            environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
+            environ.callAttr("__setitem__", "PATH", "$nativeLibDir:$currentPath")
+            // Pass the directory to the Python patch script
+            environ.callAttr("__setitem__", "NATIVE_LIB_DIR", nativeLibDir)
 
-            // --- YOUTUBE SABR BYPASS & FFMPEG LOCATION FIX ---
+            // --- MONKEY PATCH: SABR BYPASS & FFMPEG .SO PATH ---
             try {
                 val patchScript = """
-                    import yt_dlp
                     import os
+                    import yt_dlp
+                    from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
                     
-                    _orig_init = yt_dlp.YoutubeDL.__init__
-                    def _patched_init(self, params=None, *args, **kwargs):
+                    # 1. SABR Bypass
+                    _orig_ydl_init = yt_dlp.YoutubeDL.__init__
+                    def _patched_ydl_init(self, params=None, *args, **kwargs):
                         if params is None:
                             params = {}
-                        
-                        # Force clients to bypass SABR
                         if 'extractor_args' not in params:
                             params['extractor_args'] = {}
                         if 'youtube' not in params['extractor_args']:
                             params['extractor_args']['youtube'] = {}
                         params['extractor_args']['youtube']['player_client'] = ['tv', 'android_vr', 'web_safari']
-                        
-                        # Disable resumable downloads
                         params['nopart'] = True
-                        
-                        # Ensure yt-dlp looks at the directory, not a specific file
-                        if 'ffmpeg_location' in params:
-                            if params['ffmpeg_location'] and not os.path.isdir(params['ffmpeg_location']):
-                                params['ffmpeg_location'] = os.path.dirname(params['ffmpeg_location'])
-                        
-                        _orig_init(self, params, *args, **kwargs)
+                        _orig_ydl_init(self, params, *args, **kwargs)
+                    yt_dlp.YoutubeDL.__init__ = _patched_ydl_init
                     
-                    yt_dlp.YoutubeDL.__init__ = _patched_init
+                    # 2. FFmpeg .so Path Override
+                    native_lib_dir = os.environ.get('NATIVE_LIB_DIR')
+                    ffmpeg_path = os.path.join(native_lib_dir, 'libffmpeg.so')
+                    ffprobe_path = os.path.join(native_lib_dir, 'libffprobe.so')
+                    
+                    _orig_ffmpeg_init = FFmpegPostProcessor.__init__
+                    def _patched_ffmpeg_init(self, downloader=None):
+                        _orig_ffmpeg_init(self, downloader)
+                        self.executable = ffmpeg_path
+                        self.probe_executable = ffprobe_path
+                    FFmpegPostProcessor.__init__ = _patched_ffmpeg_init
                 """.trimIndent()
                 python.getModule("builtins").callAttr("exec", patchScript)
             } catch (e: Exception) {
@@ -121,12 +109,12 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             var resultJson = "null"
             try {
                 val module = python.getModule("downloader")
-                // PASS ffmpegDir INSTEAD OF ffmpegPath
+                // Pass nativeLibDir to downloader.py
                 module.callAttr(
                     "download_track",
                     query,
                     tempDir.absolutePath,
-                    ffmpegDir, 
+                    nativeLibDir, 
                     song,
                     artist
                 )

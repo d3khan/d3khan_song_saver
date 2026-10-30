@@ -19,6 +19,7 @@
     android:label="@string/app_name"
     android:theme="@style/Theme.d3khan_song_saver"
     android:requestLegacyExternalStorage="true"
+    android:extractNativeLibs="true" 
     android:usesCleartextTraffic="${usesCleartextTraffic}">
     
     <activity
