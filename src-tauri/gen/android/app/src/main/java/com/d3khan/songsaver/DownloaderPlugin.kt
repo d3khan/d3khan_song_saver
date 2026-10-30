@@ -26,7 +26,8 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun ensureBinary(name: String) {
-        val target = File(activity.filesDir, name)
+        // USE codeCacheDir so Android 10+ allows execution!
+        val target = File(activity.codeCacheDir, name)
         if (!target.exists() || target.length() == 0L) {
             activity.assets.open(name).use { input ->
                 target.outputStream().use { output ->
@@ -44,7 +45,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         try {
             val args = invoke.getArgs()
             val query = args.getString("query")
-            val outBase = args.getString("out_base") // This is now a content:// URI
+            val outBase = args.getString("out_base")
             val song = args.getString("song")
             val artist = args.getString("artist")
 
@@ -52,15 +53,14 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             ensureBinary("ffmpeg")
             ensureBinary("ffprobe")
 
-            val ffmpegDir = activity.filesDir.absolutePath
-            val ffmpegPath = File(activity.filesDir, "ffmpeg").absolutePath
+            val ffmpegDir = activity.codeCacheDir.absolutePath
+            val ffmpegPath = File(activity.codeCacheDir, "ffmpeg").absolutePath
 
             val os = Python.getInstance().getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
-            // 1. Download to a TEMPORARY folder that Python can write to
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
@@ -80,7 +80,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                 val tempFilePath = parsed.getString("path")
                 val tempFile = File(tempFilePath)
 
-                // 2. Copy the file from temp folder to the user's SAF folder
                 val targetUri = Uri.parse(outBase)
                 val fileName = tempFile.name
                 val mimeType = "audio/mpeg"
@@ -95,7 +94,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                             inputStream.copyTo(outputStream)
                         }
                     }
-                    tempFile.delete() // Cleanup
+                    tempFile.delete()
                     
                     val response = JSObject()
                     response.put("result", resultJson)
@@ -123,7 +122,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
     fun pickFolder(invoke: Invoke) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        // Use Tauri's built-in launcher
         startActivityForResult(invoke, intent, "folderPickerResult")
     }
 
@@ -132,13 +130,12 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data
             if (uri != null) {
-                // Take persistable permission so the app can write to this folder later
                 activity.contentResolver.takePersistableUriPermission(
                     uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
                 val response = JSObject()
-                response.put("path", uri.toString()) // Return content:// URI to Rust
+                response.put("path", uri.toString())
                 invoke.resolve(response)
             } else {
                 invoke.reject("No folder selected")

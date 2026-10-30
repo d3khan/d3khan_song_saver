@@ -91,14 +91,25 @@
   async function browseFolder() {
     if (!state.isTauri) return alert("Folder picker works only in the Tauri app.");
     try {
-      const path = await window.__TAURI__.core.invoke("pick_folder");
+      const path = await window.__TAURI__.core.invoke('pick_folder');
       if (path) {
         state.folder = path;
-        const placeholder = $("folder-placeholder");
-        const value = $("folder-value");
+
+        let displayPath = path;
+        if (path.startsWith('content://')) {
+          const decoded = decodeURIComponent(path);
+          const parts = decoded.split(':');
+          if (parts.length > 1) {
+            displayPath = parts[parts.length - 1];
+          }
+        }
+
+        const placeholder = $("#folder-placeholder");
+        const value = $("#folder-value");
+
         if (placeholder && value) {
           placeholder.hidden = true;
-          value.textContent = path;
+          value.textContent = displayPath;
           value.hidden = false;
         }
         checkReady();

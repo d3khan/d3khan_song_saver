@@ -69,6 +69,7 @@ body {
   background: radial-gradient(1100px 640px at 8% -12%, rgba(255, 255, 255, 0.04), transparent 60%),
     radial-gradient(900px 560px at 112% 8%, rgba(255, 255, 255, 0.02), transparent 55%),
     var(--bg);
+  overflow-x: hidden !important;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -1726,4 +1727,13 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   margin-top: 2px;
+}
+
+#folder-placeholder,
+#output-dir {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: block;
 }
