@@ -15,17 +15,25 @@ import org.json.JSONObject
 class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun ensurePython() {
-        if (!Python.isStarted()) Python.start(AndroidPlatform(activity))
+        if (!Python.isStarted()) {
+            Python.start(AndroidPlatform(activity))
+        }
     }
 
     private fun ensureBinary(name: String) {
         val target = File(activity.filesDir, name)
+        // Force re-extraction if the file doesn't exist or is empty
         if (!target.exists() || target.length() == 0L) {
             activity.assets.open(name).use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
             }
-            target.setExecutable(true)
         }
+        // Ensure the binary has full permissions to execute
+        target.setReadable(true, false)
+        target.setWritable(true, false)
+        target.setExecutable(true, false)
     }
 
     @Command
@@ -38,18 +46,37 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val artist = args.getString("artist")
 
             ensurePython()
+            
+            // Extract both binaries and ensure they are executable
             ensureBinary("ffmpeg")
             ensureBinary("ffprobe")
-            
-            // Kotlin constructs the true Android path for FFmpeg
+
+            // Get the absolute path to the ffmpeg directory
+            val ffmpegDir = activity.filesDir.absolutePath
             val ffmpegPath = File(activity.filesDir, "ffmpeg").absolutePath
 
+            // Inject the ffmpeg directory into Python's PATH so yt-dlp can find it
+            val os = Python.getInstance().getModule("os")
+            val environ = os.get("environ")!!
+            val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
+            environ.callAttr("put", "PATH", "$ffmpegDir:$currentPath")
+
             val module = Python.getInstance().getModule("downloader")
-            val resultJson = module.callAttr("download_track", query, outBase, ffmpegPath, song, artist)?.toString() ?: "null"
             
+            // Call the Python function
+            val resultJson = module.callAttr(
+                "download_track",
+                query,
+                outBase,
+                ffmpegPath,
+                song,
+                artist
+            )?.toString() ?: "null"
+
             val response = JSObject()
             response.put("result", resultJson)
             invoke.resolve(response)
+
         } catch (e: Exception) {
             // Catch Python/Chaquopy errors and package them as JSON
             val errorResponse = JSONObject()
