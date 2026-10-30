@@ -38,67 +38,63 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             ensurePython()
 
             val python = Python.getInstance()
-            // Get the read-only native library directory
             val nativeLibDir = activity.applicationInfo.nativeLibraryDir
 
             val os = python.getModule("os")
             val environ = os.get("environ")!!
-            // Make sure the native dir is in PATH
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$nativeLibDir:$currentPath")
-            // Pass the directory to the Python patch script
             environ.callAttr("__setitem__", "NATIVE_LIB_DIR", nativeLibDir)
 
-            // --- ROBUST MONKEY PATCH: SABR BYPASS & FFMPEG .SO PATH ---
+            // --- BULLETPROOF MONKEY PATCH ---
             try {
                 val patchScript = """
                     import os
                     import yt_dlp
-                    from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
                     
-                    # 1. SABR Bypass & 416 Prevention
-                    _orig_ydl_init = yt_dlp.YoutubeDL.__init__
-                    def _patched_ydl_init(self, params=None, *args, **kwargs):
-                        if params is None:
-                            params = {}
+                    # --- 1. SABR BYPASS (CRITICAL) ---
+                    # This must succeed. If it fails, downloads will throw HTTP 416.
+                    try:
+                        _orig_ydl_init = yt_dlp.YoutubeDL.__init__
+                        def _patched_ydl_init(self, params=None, *args, **kwargs):
+                            if params is None:
+                                params = {}
+                            if 'extractor_args' not in params:
+                                params['extractor_args'] = {}
+                            if 'youtube' not in params['extractor_args']:
+                                params['extractor_args']['youtube'] = {}
+                            
+                            # Force TV client to bypass SABR
+                            params['extractor_args']['youtube']['player_client'] = ['tv', 'web_safari']
+                            
+                            # Prevent HTTP 416 by disabling resumable downloads
+                            params['nopart'] = True
+                            params['continuedl'] = False
+                            
+                            _orig_ydl_init(self, params, *args, **kwargs)
+                        yt_dlp.YoutubeDL.__init__ = _patched_ydl_init
+                    except Exception as e:
+                        print(f"SABR Patch Failed: {e}")
+
+                    # --- 2. FFMPEG .SO OVERRIDE (OPTIONAL) ---
+                    # If this fails, the download will still succeed, but might not convert to MP3.
+                    try:
+                        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+                        native_lib_dir = os.environ.get('NATIVE_LIB_DIR')
+                        ffmpeg_path = os.path.join(native_lib_dir, 'libffmpeg.so')
+                        ffprobe_path = os.path.join(native_lib_dir, 'libffprobe.so')
                         
-                        # Force clients that bypass SABR and provide direct URLs
-                        if 'extractor_args' not in params:
-                            params['extractor_args'] = {}
-                        if 'youtube' not in params['extractor_args']:
-                            params['extractor_args']['youtube'] = {}
-                        
-                        # Use 'tv' and 'web_safari' - these are currently reliable
-                        params['extractor_args']['youtube']['player_client'] = ['tv', 'web_safari']
-                        
-                        # Prevent resumable download errors (HTTP 416)
-                        params['nopart'] = True
-                        params['continuedl'] = False
-                        
-                        # Debug: Print the applied options to confirm patch
-                        print(f"PATCHED YDL_OPTS: {params.get('extractor_args')}")
-                        
-                        _orig_ydl_init(self, params, *args, **kwargs)
-                    
-                    yt_dlp.YoutubeDL.__init__ = _patched_ydl_init
-                    
-                    # 2. FFmpeg .so Path Override
-                    native_lib_dir = os.environ.get('NATIVE_LIB_DIR')
-                    ffmpeg_path = os.path.join(native_lib_dir, 'libffmpeg.so')
-                    ffprobe_path = os.path.join(native_lib_dir, 'libffprobe.so')
-                    
-                    _orig_ffmpeg_init = FFmpegPostProcessor.__init__
-                    def _patched_ffmpeg_init(self, downloader=None):
-                        _orig_ffmpeg_init(self, downloader)
-                        self.executable = ffmpeg_path
-                        self.probe_executable = ffprobe_path
-                    FFmpegPostProcessor.__init__ = _patched_ffmpeg_init
+                        _orig_ffmpeg_init = FFmpegPostProcessor.__init__
+                        def _patched_ffmpeg_init(self, downloader=None):
+                            _orig_ffmpeg_init(self, downloader)
+                            self.executable = ffmpeg_path
+                            self.probe_executable = ffprobe_path
+                        FFmpegPostProcessor.__init__ = _patched_ffmpeg_init
+                    except Exception as e:
+                        print(f"FFmpeg Patch Failed: {e}")
                 """.trimIndent()
                 
-                // Execute in the __main__ module to ensure global effect
-                val mainModule = python.getModule("__main__")
-                python.getModule("builtins").callAttr("exec", patchScript, mainModule.get("__dict__"))
-                
+                python.getModule("builtins").callAttr("exec", patchScript)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -125,7 +121,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             var resultJson = "null"
             try {
                 val module = python.getModule("downloader")
-                // Pass nativeLibDir to downloader.py
                 module.callAttr(
                     "download_track",
                     query,
