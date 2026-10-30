@@ -57,12 +57,18 @@
       if (status.includes("All done")) addLog(status, "success");
     });
 
-    window.__TAURI__.event.listen("download-error", (event) => {
-      addLog(event.payload.error, "error");
+    window.__TAURI__.event.listen('download-log', (event) => {
+      const msg = typeof event.payload === 'object' && event.payload !== null
+        ? event.payload.message
+        : event.payload;
+      addLog(msg, "info");
     });
 
-    window.__TAURI__.event.listen("download-log", (event) => {
-      addLog(event.payload.message, "warn");
+    window.__TAURI__.event.listen('download-error', (event) => {
+      const msg = typeof event.payload === 'object' && event.payload !== null
+        ? event.payload.message
+        : event.payload;
+      addLog(msg, "error");
     });
 
     window.__TAURI__.event.listen("batch-paused", (event) => {

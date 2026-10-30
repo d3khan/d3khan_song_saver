@@ -55,7 +55,8 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val ffmpegDir = activity.codeCacheDir.absolutePath
             val ffmpegPath = File(activity.codeCacheDir, "ffmpeg").absolutePath
 
-            val os = Python.getInstance().getModule("os")
+            val python = Python.getInstance()
+            val os = python.getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
@@ -63,16 +64,16 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
-            val module = Python.getInstance().getModule("downloader")
-            
-            val contextlib = Python.getInstance().getModule("contextlib")
-            val io = Python.getInstance().getModule("io")
+            // --- CAPTURE PYTHON STDOUT ---
+            val sys = python.getModule("sys")
+            val io = python.getModule("io")
             val stringIO = io.callAttr("StringIO")
-            val redirect = contextlib.callAttr("redirect_stdout", stringIO)
-            
-            var rawOutput = ""
+            val oldStdout = sys.get("stdout")
+            sys.put("stdout", stringIO)
+
+            var resultJson = "null"
             try {
-                redirect.callAttr("__enter__")
+                val module = python.getModule("downloader")
                 module.callAttr(
                     "download_track",
                     query,
@@ -81,20 +82,22 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     song,
                     artist
                 )
-                rawOutput = stringIO.callAttr("getvalue").toString().trim()
+                
+                // Extract the JSON printed by Python
+                val fullOutput = stringIO.callAttr("getvalue").toString().trim()
+                val lines = fullOutput.lines()
+                for (i in lines.indices.reversed()) {
+                    val line = lines[i].trim()
+                    if (line.startsWith("{") && line.endsWith("}")) {
+                        resultJson = line
+                        break
+                    }
+                }
             } finally {
-                redirect.callAttr("__exit__", null, null, null)
+                // Restore standard output
+                sys.put("stdout", oldStdout)
             }
-
-            // Extract only the JSON part from the raw output
-            var resultJson = rawOutput
-            val jsonIndex = rawOutput.lastIndexOf("{\"status\"")
-            if (jsonIndex != -1) {
-                resultJson = rawOutput.substring(jsonIndex)
-            } else {
-                // If we can't find the JSON, throw the raw output so it shows in the GUI
-                throw Exception("Python output was: $rawOutput")
-            }
+            // -----------------------------
 
             val parsed = JSONObject(resultJson)
             
@@ -132,7 +135,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         } catch (e: Exception) {
             val errorResponse = JSONObject()
             errorResponse.put("status", "error")
-            errorResponse.put("message", e.message) // Send the raw message directly
+            errorResponse.put("message", "Plugin Error: ${e.message}")
             
             val response = JSObject()
             response.put("result", errorResponse.toString())
