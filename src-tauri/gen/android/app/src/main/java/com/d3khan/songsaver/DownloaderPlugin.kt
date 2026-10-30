@@ -38,7 +38,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             ensurePython()
 
             val python = Python.getInstance()
-            // Get the read-only native library directory (e.g., /data/app/.../lib/arm64)
+            // Get the read-only native library directory
             val nativeLibDir = activity.applicationInfo.nativeLibraryDir
 
             val os = python.getModule("os")
@@ -49,25 +49,37 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             // Pass the directory to the Python patch script
             environ.callAttr("__setitem__", "NATIVE_LIB_DIR", nativeLibDir)
 
-            // --- MONKEY PATCH: SABR BYPASS & FFMPEG .SO PATH ---
+            // --- ROBUST MONKEY PATCH: SABR BYPASS & FFMPEG .SO PATH ---
             try {
                 val patchScript = """
                     import os
                     import yt_dlp
                     from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
                     
-                    # 1. SABR Bypass
+                    # 1. SABR Bypass & 416 Prevention
                     _orig_ydl_init = yt_dlp.YoutubeDL.__init__
                     def _patched_ydl_init(self, params=None, *args, **kwargs):
                         if params is None:
                             params = {}
+                        
+                        # Force clients that bypass SABR and provide direct URLs
                         if 'extractor_args' not in params:
                             params['extractor_args'] = {}
                         if 'youtube' not in params['extractor_args']:
                             params['extractor_args']['youtube'] = {}
-                        params['extractor_args']['youtube']['player_client'] = ['tv', 'android_vr', 'web_safari']
+                        
+                        # Use 'tv' and 'web_safari' - these are currently reliable
+                        params['extractor_args']['youtube']['player_client'] = ['tv', 'web_safari']
+                        
+                        # Prevent resumable download errors (HTTP 416)
                         params['nopart'] = True
+                        params['continuedl'] = False
+                        
+                        # Debug: Print the applied options to confirm patch
+                        print(f"PATCHED YDL_OPTS: {params.get('extractor_args')}")
+                        
                         _orig_ydl_init(self, params, *args, **kwargs)
+                    
                     yt_dlp.YoutubeDL.__init__ = _patched_ydl_init
                     
                     # 2. FFmpeg .so Path Override
@@ -82,7 +94,11 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                         self.probe_executable = ffprobe_path
                     FFmpegPostProcessor.__init__ = _patched_ffmpeg_init
                 """.trimIndent()
-                python.getModule("builtins").callAttr("exec", patchScript)
+                
+                // Execute in the __main__ module to ensure global effect
+                val mainModule = python.getModule("__main__")
+                python.getModule("builtins").callAttr("exec", patchScript, mainModule.get("__dict__"))
+                
             } catch (e: Exception) {
                 e.printStackTrace()
             }
