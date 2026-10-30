@@ -1,6 +1,5 @@
 use crate::metadata::TrackMeta;
 use serde::{Deserialize, Serialize};
-#[allow(unused_imports)]
 use tauri::{AppHandle, Manager};
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -110,6 +109,8 @@ pub async fn download_track(
     output_dir: String,
     mode: Option<String>,
 ) -> Result<(), String> {
+    // On Android, output_dir is a content:// URI.
+    // We pass it directly to the Kotlin plugin to handle.
     let out_path = std::path::PathBuf::from(&output_dir);
 
     let overwrite = mode.as_deref() == Some("download");

@@ -3,7 +3,6 @@ package com.d3khan.songsaver
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
-import android.os.Environment
 import android.provider.DocumentsContract
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.ActivityResultLauncher
@@ -29,14 +28,14 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data
             if (uri != null) {
-                val path = getPathFromUri(uri)
-                if (path != null) {
-                    val response = JSObject()
-                    response.put("path", path)
-                    pendingFolderInvoke?.resolve(response)
-                } else {
-                    pendingFolderInvoke?.reject("Could not resolve folder path")
-                }
+                // Take persistable permission so the app can write to this folder later
+                activity.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                val response = JSObject()
+                response.put("path", uri.toString()) // Return content:// URI to Rust
+                pendingFolderInvoke?.resolve(response)
             } else {
                 pendingFolderInvoke?.reject("No folder selected")
             }
@@ -71,7 +70,7 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
         try {
             val args = invoke.getArgs()
             val query = args.getString("query")
-            val outBase = args.getString("out_base")
+            val outBase = args.getString("out_base") // This will be a content:// URI
             val song = args.getString("song")
             val artist = args.getString("artist")
 
@@ -85,19 +84,54 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
             val os = Python.getInstance().getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
-            
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
+
+            // 1. Download to a TEMPORARY folder that Python can write to natively
+            val tempDir = File(activity.cacheDir, "temp_downloads")
+            if (!tempDir.exists()) tempDir.mkdirs()
 
             val module = Python.getInstance().getModule("downloader")
             val resultJson = module.callAttr(
                 "download_track",
                 query,
-                outBase,
+                tempDir.absolutePath, // Pass temp dir to Python!
                 ffmpegPath,
                 song,
                 artist
             )?.toString() ?: "null"
 
+            val parsed = JSONObject(resultJson)
+            
+            if (parsed.optString("status") == "success") {
+                val tempFilePath = parsed.getString("path")
+                val tempFile = File(tempFilePath)
+
+                // 2. Copy the file from temp folder to the user's SAF folder
+                val targetUri = Uri.parse(outBase)
+                val fileName = tempFile.name
+                val mimeType = "audio/mpeg"
+
+                val newFileUri = DocumentsContract.createDocument(
+                    activity.contentResolver, targetUri, mimeType, fileName
+                )
+
+                if (newFileUri != null) {
+                    activity.contentResolver.openOutputStream(newFileUri)?.use { outputStream ->
+                        tempFile.inputStream().use { inputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    tempFile.delete() // Cleanup
+                    
+                    // Return success to Rust
+                    val response = JSObject()
+                    response.put("result", resultJson)
+                    invoke.resolve(response)
+                    return
+                }
+            }
+
+            // If we get here, something failed
             val response = JSObject()
             response.put("result", resultJson)
             invoke.resolve(response)
@@ -105,7 +139,7 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
         } catch (e: Exception) {
             val errorResponse = JSONObject()
             errorResponse.put("status", "error")
-            errorResponse.put("message", "Python Error: ${e.message}")
+            errorResponse.put("message", "Plugin Error: ${e.message}")
             
             val response = JSObject()
             response.put("result", errorResponse.toString())
@@ -119,25 +153,5 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         folderPickerLauncher.launch(intent)
-    }
-
-    private fun getPathFromUri(uri: Uri): String? {
-        try {
-            val docId = DocumentsContract.getTreeDocumentId(uri)
-            val split = docId.split(":")
-            val type = split[0]
-            var path = ""
-            if ("primary".equals(type, ignoreCase = true)) {
-                path = Environment.getExternalStorageDirectory().toString() + "/" + split[1]
-            } else {
-                val sdCardPath = System.getenv("SECONDARY_STORAGE")
-                if (sdCardPath != null) {
-                    path = sdCardPath + "/" + split[1]
-                }
-            }
-            return path
-        } catch (e: Exception) {
-            return null
-        }
     }
 }
