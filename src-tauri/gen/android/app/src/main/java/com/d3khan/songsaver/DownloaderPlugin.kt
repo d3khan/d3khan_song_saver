@@ -18,8 +18,6 @@ import org.json.JSONObject
 @TauriPlugin
 class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
-    private var pendingFolderInvoke: Invoke? = null
-
     private fun ensurePython() {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(activity))
@@ -59,8 +57,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val os = Python.getInstance().getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
-            
-            // FIXED: Use __setitem__ instead of put
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
             val module = Python.getInstance().getModule("downloader")
@@ -90,14 +86,14 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun pickFolder(invoke: Invoke) {
-        pendingFolderInvoke = invoke
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        activity.startActivityForResult(intent, 1234)
+        // Tauri's startActivityForResult handles mapping the invoke automatically
+        startActivityForResult(invoke, intent, 1234)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
+    override fun onActivityResult(invoke: Invoke, requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(invoke, requestCode, resultCode, data)
         if (requestCode == 1234) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 val uri = data.data
@@ -106,17 +102,16 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     if (path != null) {
                         val response = JSObject()
                         response.put("path", path)
-                        pendingFolderInvoke?.resolve(response)
+                        invoke.resolve(response)
                     } else {
-                        pendingFolderInvoke?.reject("Could not resolve folder path")
+                        invoke.reject("Could not resolve folder path")
                     }
                 } else {
-                    pendingFolderInvoke?.reject("No folder selected")
+                    invoke.reject("No folder selected")
                 }
             } else {
-                pendingFolderInvoke?.reject("No folder selected")
+                invoke.reject("No folder selected")
             }
-            pendingFolderInvoke = null
         }
     }
 
