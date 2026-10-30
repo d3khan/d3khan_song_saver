@@ -75,17 +75,9 @@
       addLog("⏸ Batch paused: " + message, "warn");
     });
 
-    // Generic app-log listener for backend errors/messages
-    if (window.__TAURI__) {
-      window.__TAURI__.event.listen('app-log', (event) => {
-        // Use whatever your existing logging function is called, e.g., appendLog, log, etc.
-        if (typeof appendLog === 'function') {
-          appendLog(`[App] ${event.payload}`, 'info');
-        } else {
-          console.log(`[App Log] ${event.payload}`);
-        }
-      });
-    }
+    window.__TAURI__.event.listen('app-log', (event) => {
+      addLog(`[App] ${event.payload}`, 'info');
+    });
   }
 
   async function browseFolder() {
@@ -104,8 +96,8 @@
           }
         }
 
-        const placeholder = $("#folder-placeholder");
-        const value = $("#folder-value");
+        const placeholder = $("folder-placeholder");
+        const value = $("folder-value");
 
         if (placeholder && value) {
           placeholder.hidden = true;

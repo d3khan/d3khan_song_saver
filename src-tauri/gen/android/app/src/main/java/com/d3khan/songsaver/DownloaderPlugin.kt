@@ -65,14 +65,34 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             if (!tempDir.exists()) tempDir.mkdirs()
 
             val module = Python.getInstance().getModule("downloader")
-            val resultJson = module.callAttr(
-                "download_track",
-                query,
-                tempDir.absolutePath,
-                ffmpegPath,
-                song,
-                artist
-            )?.toString() ?: "null"
+            
+            // --- CAPTURE PYTHON PRINT WITHOUT MODIFYING PYTHON ---
+            val contextlib = Python.getInstance().getModule("contextlib")
+            val io = Python.getInstance().getModule("io")
+            val stringIO = io.callAttr("StringIO")
+            val redirect = contextlib.callAttr("redirect_stdout", stringIO)
+            
+            var resultJson = "null"
+            try {
+                redirect.callAttr("__enter__")
+                module.callAttr(
+                    "download_track",
+                    query,
+                    tempDir.absolutePath,
+                    ffmpegPath,
+                    song,
+                    artist
+                )
+                resultJson = stringIO.callAttr("getvalue").toString().trim()
+            } finally {
+                redirect.callAttr("__exit__", null, null, null)
+            }
+            // -----------------------------------------------------
+
+            // Fallback just in case
+            if (resultJson.isEmpty() || resultJson == "null") {
+                throw Exception("Python did not return a valid JSON response")
+            }
 
             val parsed = JSONObject(resultJson)
             
