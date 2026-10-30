@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import app.tauri.annotation.Command
@@ -18,33 +19,31 @@ import java.io.File
 import org.json.JSONObject
 
 @TauriPlugin
-class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
+class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activity) {
 
     private var pendingFolderInvoke: Invoke? = null
-    private var folderPickerLauncher: ActivityResultLauncher<Intent>
 
-    // Initialize the modern Android ActivityResultLauncher
-    init {
-        folderPickerLauncher = activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == Activity.RESULT_OK) {
-                val uri = result.data?.data
-                if (uri != null) {
-                    val path = getPathFromUri(uri)
-                    if (path != null) {
-                        val response = JSObject()
-                        response.put("path", path)
-                        pendingFolderInvoke?.resolve(response)
-                    } else {
-                        pendingFolderInvoke?.reject("Could not resolve folder path")
-                    }
+    private val folderPickerLauncher = activity.registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                val path = getPathFromUri(uri)
+                if (path != null) {
+                    val response = JSObject()
+                    response.put("path", path)
+                    pendingFolderInvoke?.resolve(response)
                 } else {
-                    pendingFolderInvoke?.reject("No folder selected")
+                    pendingFolderInvoke?.reject("Could not resolve folder path")
                 }
             } else {
                 pendingFolderInvoke?.reject("No folder selected")
             }
-            pendingFolderInvoke = null
+        } else {
+            pendingFolderInvoke?.reject("No folder selected")
         }
+        pendingFolderInvoke = null
     }
 
     private fun ensurePython() {
@@ -87,7 +86,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             
-            // Set Python PATH so yt-dlp finds ffmpeg/ffprobe
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
             val module = Python.getInstance().getModule("downloader")
