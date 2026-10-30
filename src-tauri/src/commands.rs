@@ -1,6 +1,7 @@
 use crate::metadata::TrackMeta;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+#[allow(unused_imports)]
+use tauri::{AppHandle, Manager};
 
 #[derive(Serialize, Default, Clone, Debug)]
 pub struct Settings {
@@ -77,7 +78,24 @@ pub async fn resolve_bulk_input(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn pick_folder(_app: AppHandle) -> Result<Option<String>, String> {
     #[cfg(target_os = "android")]
-    return Err("Folder picking is not supported on Android".to_string());
+    {
+        // Get the app's private data directory
+        // Resolves to something like: /data/user/0/com.d3khan.songsaver/files
+        let base_dir = _app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get Android storage path: {}", e))?;
+
+        // Create a "Music" subfolder inside it
+        let music_dir = base_dir.join("Music");
+
+        // Ensure the directory actually exists on the device
+        std::fs::create_dir_all(&music_dir)
+            .map_err(|e| format!("Failed to create Music folder: {}", e))?;
+
+        // Return the path as a string to the frontend
+        return Ok(Some(music_dir.to_string_lossy().to_string()));
+    }
 
     #[cfg(not(target_os = "android"))]
     {
