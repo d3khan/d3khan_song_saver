@@ -26,7 +26,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun ensureBinary(name: String) {
-        // USE codeCacheDir so Android 10+ allows execution!
         val target = File(activity.codeCacheDir, name)
         if (!target.exists() || target.length() == 0L) {
             activity.assets.open(name).use { input ->
@@ -66,13 +65,12 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
             val module = Python.getInstance().getModule("downloader")
             
-            // --- CAPTURE PYTHON PRINT WITHOUT MODIFYING PYTHON ---
             val contextlib = Python.getInstance().getModule("contextlib")
             val io = Python.getInstance().getModule("io")
             val stringIO = io.callAttr("StringIO")
             val redirect = contextlib.callAttr("redirect_stdout", stringIO)
             
-            var resultJson = "null"
+            var rawOutput = ""
             try {
                 redirect.callAttr("__enter__")
                 module.callAttr(
@@ -83,15 +81,19 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     song,
                     artist
                 )
-                resultJson = stringIO.callAttr("getvalue").toString().trim()
+                rawOutput = stringIO.callAttr("getvalue").toString().trim()
             } finally {
                 redirect.callAttr("__exit__", null, null, null)
             }
-            // -----------------------------------------------------
 
-            // Fallback just in case
-            if (resultJson.isEmpty() || resultJson == "null") {
-                throw Exception("Python did not return a valid JSON response")
+            // Extract only the JSON part from the raw output
+            var resultJson = rawOutput
+            val jsonIndex = rawOutput.lastIndexOf("{\"status\"")
+            if (jsonIndex != -1) {
+                resultJson = rawOutput.substring(jsonIndex)
+            } else {
+                // If we can't find the JSON, throw the raw output so it shows in the GUI
+                throw Exception("Python output was: $rawOutput")
             }
 
             val parsed = JSONObject(resultJson)
@@ -130,7 +132,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         } catch (e: Exception) {
             val errorResponse = JSONObject()
             errorResponse.put("status", "error")
-            errorResponse.put("message", "Plugin Error: ${e.message}")
+            errorResponse.put("message", e.message) // Send the raw message directly
             
             val response = JSObject()
             response.put("result", errorResponse.toString())

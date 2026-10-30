@@ -69,7 +69,6 @@ body {
   background: radial-gradient(1100px 640px at 8% -12%, rgba(255, 255, 255, 0.04), transparent 60%),
     radial-gradient(900px 560px at 112% 8%, rgba(255, 255, 255, 0.02), transparent 55%),
     var(--bg);
-  overflow-x: hidden !important;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -1729,6 +1728,10 @@ button:disabled {
   margin-top: 2px;
 }
 
+body {
+  overflow-x: hidden !important;
+}
+
 #folder-placeholder,
 #output-dir {
   white-space: nowrap;
@@ -1736,4 +1739,21 @@ button:disabled {
   text-overflow: ellipsis;
   max-width: 100%;
   display: block;
+}
+
+/* Force long text to truncate and not break the layout */
+#folder-value {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  max-width: 100%;
+}
+
+/* Ensure any flex containers that hold the path have min-width: 0 */
+.job-setup,
+#folder-row,
+#folder-container {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
