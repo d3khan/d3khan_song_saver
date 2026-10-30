@@ -62,26 +62,44 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
-            // --- YOUTUBE SABR BYPASS (Monkey-patch yt-dlp) ---
+            // --- YOUTUBE SABR BYPASS (Force Override) ---
             try {
                 val patchScript = """
                     import yt_dlp
+                    
                     _orig_init = yt_dlp.YoutubeDL.__init__
                     def _patched_init(self, params=None, *args, **kwargs):
-                        if params is None: 
+                        if params is None:
                             params = {}
-                        params.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = ['tv', 'web_safari']
+                        
+                        # FORCE override the player_client set in downloader.py
+                        if 'extractor_args' not in params:
+                            params['extractor_args'] = {}
+                        if 'youtube' not in params['extractor_args']:
+                            params['extractor_args']['youtube'] = {}
+                            
+                        # Use clients that bypass SABR and provide direct HTTPS URLs
+                        params['extractor_args']['youtube']['player_client'] = ['tv', 'android_vr', 'web_safari']
+                        
+                        # Ensure nopart is set to prevent range requests
+                        params['nopart'] = True
+                        
                         _orig_init(self, params, *args, **kwargs)
+                    
                     yt_dlp.YoutubeDL.__init__ = _patched_init
                 """.trimIndent()
                 python.getModule("builtins").callAttr("exec", patchScript)
             } catch (e: Exception) {
-                // Ignore if patch fails, let yt-dlp try its best
+                e.printStackTrace()
             }
             // --------------------------------------------------
 
             val tempDir = File(activity.cacheDir, "temp_downloads")
-            if (!tempDir.exists()) tempDir.mkdirs()
+            // WIPE THE CACHE to prevent 416 Range errors from old .part files
+            if (tempDir.exists()) {
+                tempDir.deleteRecursively()
+            }
+            tempDir.mkdirs()
 
             val sys = python.getModule("sys")
             val io = python.getModule("io")
