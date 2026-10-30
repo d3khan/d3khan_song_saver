@@ -35,6 +35,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
         }
+        // Set global executable permissions
         target.setReadable(true, false)
         target.setWritable(true, false)
         target.setExecutable(true, false)
@@ -55,34 +56,39 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
             val python = Python.getInstance()
             val ffmpegDir = activity.codeCacheDir.absolutePath
-            val ffmpegPath = File(activity.codeCacheDir, "ffmpeg").absolutePath
+            // We no longer need the full file path, we pass the directory
+            // val ffmpegPath = File(activity.codeCacheDir, "ffmpeg").absolutePath
 
             val os = python.getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
-            // --- YOUTUBE SABR BYPASS (Force Override) ---
+            // --- YOUTUBE SABR BYPASS & FFMPEG LOCATION FIX ---
             try {
                 val patchScript = """
                     import yt_dlp
+                    import os
                     
                     _orig_init = yt_dlp.YoutubeDL.__init__
                     def _patched_init(self, params=None, *args, **kwargs):
                         if params is None:
                             params = {}
                         
-                        # FORCE override the player_client set in downloader.py
+                        # Force clients to bypass SABR
                         if 'extractor_args' not in params:
                             params['extractor_args'] = {}
                         if 'youtube' not in params['extractor_args']:
                             params['extractor_args']['youtube'] = {}
-                            
-                        # Use clients that bypass SABR and provide direct HTTPS URLs
                         params['extractor_args']['youtube']['player_client'] = ['tv', 'android_vr', 'web_safari']
                         
-                        # Ensure nopart is set to prevent range requests
+                        # Disable resumable downloads
                         params['nopart'] = True
+                        
+                        # Ensure yt-dlp looks at the directory, not a specific file
+                        if 'ffmpeg_location' in params:
+                            if params['ffmpeg_location'] and not os.path.isdir(params['ffmpeg_location']):
+                                params['ffmpeg_location'] = os.path.dirname(params['ffmpeg_location'])
                         
                         _orig_init(self, params, *args, **kwargs)
                     
@@ -95,7 +101,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             // --------------------------------------------------
 
             val tempDir = File(activity.cacheDir, "temp_downloads")
-            // WIPE THE CACHE to prevent 416 Range errors from old .part files
             if (tempDir.exists()) {
                 tempDir.deleteRecursively()
             }
@@ -116,11 +121,12 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             var resultJson = "null"
             try {
                 val module = python.getModule("downloader")
+                // PASS ffmpegDir INSTEAD OF ffmpegPath
                 module.callAttr(
                     "download_track",
                     query,
                     tempDir.absolutePath,
-                    ffmpegPath,
+                    ffmpegDir, 
                     song,
                     artist
                 )

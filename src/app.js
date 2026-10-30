@@ -69,7 +69,7 @@
       if (typeof event.payload === 'string') {
         msg = event.payload;
       } else if (typeof event.payload === 'object' && event.payload !== null) {
-        msg = event.payload.error || event.payload.message || JSON.stringify(event.payload);
+        msg = event.payload.message || event.payload.error || JSON.stringify(event.payload);
       }
       addLog(msg, "error");
     });
