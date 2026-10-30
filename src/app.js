@@ -65,9 +65,12 @@
     });
 
     window.__TAURI__.event.listen('download-error', (event) => {
-      const msg = typeof event.payload === 'object' && event.payload !== null
-        ? event.payload.message
-        : event.payload;
+      let msg = "Unknown error";
+      if (typeof event.payload === 'string') {
+        msg = event.payload;
+      } else if (typeof event.payload === 'object' && event.payload !== null) {
+        msg = event.payload.error || event.payload.message || JSON.stringify(event.payload);
+      }
       addLog(msg, "error");
     });
 

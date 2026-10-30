@@ -61,10 +61,16 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
+            // --- YOUTUBE SABR WORKAROUND ---
+            // Set an environment variable that the Python script will read
+            // (or if we control yt-dlp directly, we set it via extractor args).
+            // Since we can't modify the python file, we set the yt-dlp proxy arguments.
+            environ.callAttr("__setitem__", "YTDLP_EXTRACTOR_ARGS", "youtube:player_client=tv,mweb")
+            // --------------------------------
+
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
-            // Capture BOTH stdout and stderr
             val sys = python.getModule("sys")
             val io = python.getModule("io")
             
@@ -89,7 +95,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     artist
                 )
                 
-                // Extract the JSON printed to stdout
                 val fullOutput = outCapture.callAttr("getvalue").toString().trim()
                 val lines = fullOutput.lines()
                 for (i in lines.indices.reversed()) {
@@ -104,7 +109,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                 sys.callAttr("__setattr__", "stderr", oldErr)
             }
 
-            // If no JSON was found, build an error message using the captured output
             if (resultJson == "null") {
                 val capturedOut = outCapture.callAttr("getvalue").toString().trim()
                 val capturedErr = errCapture.callAttr("getvalue").toString().trim()
