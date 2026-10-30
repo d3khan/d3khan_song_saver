@@ -64,12 +64,18 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
-            // --- CAPTURE PYTHON STDOUT ---
+            // Capture BOTH stdout and stderr
             val sys = python.getModule("sys")
             val io = python.getModule("io")
-            val stringIO = io.callAttr("StringIO")
-            val oldStdout = sys.get("stdout")
-            sys.put("stdout", stringIO)
+            
+            val outCapture = io.callAttr("StringIO")
+            val errCapture = io.callAttr("StringIO")
+            
+            val oldOut = sys.get("stdout")
+            val oldErr = sys.get("stderr")
+            
+            sys.callAttr("__setattr__", "stdout", outCapture)
+            sys.callAttr("__setattr__", "stderr", errCapture)
 
             var resultJson = "null"
             try {
@@ -83,8 +89,8 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     artist
                 )
                 
-                // Extract the JSON printed by Python
-                val fullOutput = stringIO.callAttr("getvalue").toString().trim()
+                // Extract the JSON printed to stdout
+                val fullOutput = outCapture.callAttr("getvalue").toString().trim()
                 val lines = fullOutput.lines()
                 for (i in lines.indices.reversed()) {
                     val line = lines[i].trim()
@@ -94,10 +100,25 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
             } finally {
-                // Restore standard output
-                sys.put("stdout", oldStdout)
+                sys.callAttr("__setattr__", "stdout", oldOut)
+                sys.callAttr("__setattr__", "stderr", oldErr)
             }
-            // -----------------------------
+
+            // If no JSON was found, build an error message using the captured output
+            if (resultJson == "null") {
+                val capturedOut = outCapture.callAttr("getvalue").toString().trim()
+                val capturedErr = errCapture.callAttr("getvalue").toString().trim()
+                val errorMsg = "Python output was: $capturedOut\nPython error was: $capturedErr"
+                
+                val errorResponse = JSONObject()
+                errorResponse.put("status", "error")
+                errorResponse.put("message", errorMsg)
+                
+                val response = JSObject()
+                response.put("result", errorResponse.toString())
+                invoke.resolve(response)
+                return
+            }
 
             val parsed = JSONObject(resultJson)
             
@@ -135,7 +156,7 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
         } catch (e: Exception) {
             val errorResponse = JSONObject()
             errorResponse.put("status", "error")
-            errorResponse.put("message", "Plugin Error: ${e.message}")
+            errorResponse.put("message", "Plugin Exception: ${e.message}")
             
             val response = JSObject()
             response.put("result", errorResponse.toString())
