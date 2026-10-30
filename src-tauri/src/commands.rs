@@ -76,31 +76,25 @@ pub async fn resolve_bulk_input(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn pick_folder(_app: AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     #[cfg(target_os = "android")]
     {
-        // Get the app's private data directory
-        // Resolves to something like: /data/user/0/com.d3khan.songsaver/files
-        let base_dir = _app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get Android storage path: {}", e))?;
+        let plugin_handle = app.state::<tauri::plugin::PluginHandle<tauri::Wry>>();
+        let response = plugin_handle
+            .run_mobile_plugin::<serde_json::Value>("pickFolder", serde_json::json!({}))
+            .map_err(|e| format!("Plugin error: {}", e))?;
 
-        // Create a "Music" subfolder inside it
-        let music_dir = base_dir.join("Music");
-
-        // Ensure the directory actually exists on the device
-        std::fs::create_dir_all(&music_dir)
-            .map_err(|e| format!("Failed to create Music folder: {}", e))?;
-
-        // Return the path as a string to the frontend
-        return Ok(Some(music_dir.to_string_lossy().to_string()));
+        if let Some(path) = response.get("path").and_then(|v| v.as_str()) {
+            Ok(Some(path.to_string()))
+        } else {
+            Ok(None)
+        }
     }
 
     #[cfg(not(target_os = "android"))]
     {
         use tauri_plugin_dialog::DialogExt;
-        let folder = _app
+        let folder = app
             .dialog()
             .file()
             .set_title("Choose output folder")
@@ -118,9 +112,6 @@ pub async fn download_track(
 ) -> Result<(), String> {
     let out_path = std::path::PathBuf::from(&output_dir);
 
-    // Overwrite is true only when the frontend explicitly passes "download".
-    // Anything else (missing, "sync", "download-but-typo") keeps the safe
-    // skip-based behaviour of sync mode.
     let overwrite = mode.as_deref() == Some("download");
 
     let metas: Vec<TrackMeta> = tracks

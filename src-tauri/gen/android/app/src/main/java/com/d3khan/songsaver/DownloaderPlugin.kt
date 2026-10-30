@@ -1,6 +1,10 @@
 package com.d3khan.songsaver
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -14,6 +18,8 @@ import org.json.JSONObject
 @TauriPlugin
 class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
+    private var pendingFolderInvoke: Invoke? = null
+
     private fun ensurePython() {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(activity))
@@ -22,7 +28,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun ensureBinary(name: String) {
         val target = File(activity.filesDir, name)
-        // Force re-extraction if the file doesn't exist or is empty
         if (!target.exists() || target.length() == 0L) {
             activity.assets.open(name).use { input ->
                 target.outputStream().use { output ->
@@ -30,7 +35,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
         }
-        // Ensure the binary has full permissions to execute
         target.setReadable(true, false)
         target.setWritable(true, false)
         target.setExecutable(true, false)
@@ -46,24 +50,20 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val artist = args.getString("artist")
 
             ensurePython()
-            
-            // Extract both binaries and ensure they are executable
             ensureBinary("ffmpeg")
             ensureBinary("ffprobe")
 
-            // Get the absolute path to the ffmpeg directory
             val ffmpegDir = activity.filesDir.absolutePath
             val ffmpegPath = File(activity.filesDir, "ffmpeg").absolutePath
 
-            // Inject the ffmpeg directory into Python's PATH so yt-dlp can find it
             val os = Python.getInstance().getModule("os")
             val environ = os.get("environ")!!
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
-            environ.callAttr("put", "PATH", "$ffmpegDir:$currentPath")
+            
+            // FIXED: Use __setitem__ instead of put
+            environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
             val module = Python.getInstance().getModule("downloader")
-            
-            // Call the Python function
             val resultJson = module.callAttr(
                 "download_track",
                 query,
@@ -78,7 +78,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(response)
 
         } catch (e: Exception) {
-            // Catch Python/Chaquopy errors and package them as JSON
             val errorResponse = JSONObject()
             errorResponse.put("status", "error")
             errorResponse.put("message", "Python Error: ${e.message}")
@@ -86,6 +85,58 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val response = JSObject()
             response.put("result", errorResponse.toString())
             invoke.resolve(response)
+        }
+    }
+
+    @Command
+    fun pickFolder(invoke: Invoke) {
+        pendingFolderInvoke = invoke
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        activity.startActivityForResult(intent, 1234)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 1234) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val uri = data.data
+                if (uri != null) {
+                    val path = getPathFromUri(uri)
+                    if (path != null) {
+                        val response = JSObject()
+                        response.put("path", path)
+                        pendingFolderInvoke?.resolve(response)
+                    } else {
+                        pendingFolderInvoke?.reject("Could not resolve folder path")
+                    }
+                } else {
+                    pendingFolderInvoke?.reject("No folder selected")
+                }
+            } else {
+                pendingFolderInvoke?.reject("No folder selected")
+            }
+            pendingFolderInvoke = null
+        }
+    }
+
+    private fun getPathFromUri(uri: Uri): String? {
+        try {
+            val docId = DocumentsContract.getTreeDocumentId(uri)
+            val split = docId.split(":")
+            val type = split[0]
+            var path = ""
+            if ("primary".equals(type, ignoreCase = true)) {
+                path = Environment.getExternalStorageDirectory().toString() + "/" + split[1]
+            } else {
+                val sdCardPath = System.getenv("SECONDARY_STORAGE")
+                if (sdCardPath != null) {
+                    path = sdCardPath + "/" + split[1]
+                }
+            }
+            return path
+        } catch (e: Exception) {
+            return null
         }
     }
 }
