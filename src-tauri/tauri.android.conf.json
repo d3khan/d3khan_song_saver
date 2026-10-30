@@ -2,7 +2,7 @@
   "bundle": {
     "externalBin": [],
     "android": {
-      "minSdkVersion": 26
+      "minSdkVersion": 28
     }
   }
 }
