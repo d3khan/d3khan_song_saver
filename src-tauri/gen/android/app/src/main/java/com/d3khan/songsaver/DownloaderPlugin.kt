@@ -19,6 +19,8 @@ import org.json.JSONObject
 @TauriPlugin
 class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
+    private val clientFallbacks = listOf("tv", "web_safari", "mweb", "ios", "android")
+
     private fun ensurePython() {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(activity))
@@ -61,62 +63,81 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
-            // --- YOUTUBE SABR WORKAROUND ---
-            // Set an environment variable that the Python script will read
-            // (or if we control yt-dlp directly, we set it via extractor args).
-            // Since we can't modify the python file, we set the yt-dlp proxy arguments.
-            environ.callAttr("__setitem__", "YTDLP_EXTRACTOR_ARGS", "youtube:player_client=tv,mweb")
-            // --------------------------------
-
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
-            val sys = python.getModule("sys")
-            val io = python.getModule("io")
-            
-            val outCapture = io.callAttr("StringIO")
-            val errCapture = io.callAttr("StringIO")
-            
-            val oldOut = sys.get("stdout")
-            val oldErr = sys.get("stderr")
-            
-            sys.callAttr("__setattr__", "stdout", outCapture)
-            sys.callAttr("__setattr__", "stderr", errCapture)
-
             var resultJson = "null"
-            try {
-                val module = python.getModule("downloader")
-                module.callAttr(
-                    "download_track",
-                    query,
-                    tempDir.absolutePath,
-                    ffmpegPath,
-                    song,
-                    artist
-                )
-                
-                val fullOutput = outCapture.callAttr("getvalue").toString().trim()
-                val lines = fullOutput.lines()
-                for (i in lines.indices.reversed()) {
-                    val line = lines[i].trim()
-                    if (line.startsWith("{") && line.endsWith("}")) {
-                        resultJson = line
-                        break
+            var lastError: String? = null
+            var success = false
+
+            for ((index, client) in clientFallbacks.withIndex()) {
+                // Add a 3-second delay between attempts (skip for the first attempt)
+                if (index > 0) {
+                    try {
+                        Thread.sleep(3000L) 
+                    } catch (e: InterruptedException) {
+                        // Handle interruption if needed
                     }
                 }
-            } finally {
-                sys.callAttr("__setattr__", "stdout", oldOut)
-                sys.callAttr("__setattr__", "stderr", oldErr)
+
+                environ.callAttr("__setitem__", "YTDLP_EXTRACTOR_ARGS", "youtube:player_client=$client")
+
+                val sys = python.getModule("sys")
+                val io = python.getModule("io")
+                
+                val outCapture = io.callAttr("StringIO")
+                val errCapture = io.callAttr("StringIO")
+                
+                val oldOut = sys.get("stdout")
+                val oldErr = sys.get("stderr")
+                
+                sys.callAttr("__setattr__", "stdout", outCapture)
+                sys.callAttr("__setattr__", "stderr", errCapture)
+
+                try {
+                    val module = python.getModule("downloader")
+                    module.callAttr(
+                        "download_track",
+                        query,
+                        tempDir.absolutePath,
+                        ffmpegPath,
+                        song,
+                        artist
+                    )
+                    
+                    val fullOutput = outCapture.callAttr("getvalue").toString().trim()
+                    val lines = fullOutput.lines()
+                    for (i in lines.indices.reversed()) {
+                        val line = lines[i].trim()
+                        if (line.startsWith("{") && line.endsWith("}")) {
+                            resultJson = line
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    lastError = e.message
+                } finally {
+                    sys.callAttr("__setattr__", "stdout", oldOut)
+                    sys.callAttr("__setattr__", "stderr", oldErr)
+                }
+
+                if (resultJson != "null") {
+                    val parsed = JSONObject(resultJson)
+                    if (parsed.optString("status") == "success") {
+                        success = true
+                        break // Exit loop on success
+                    } else {
+                        lastError = parsed.optString("message", "Unknown error")
+                    }
+                } else {
+                    lastError = "Python script produced no JSON output. Output was: ${outCapture.callAttr("getvalue").toString().trim()}"
+                }
             }
 
-            if (resultJson == "null") {
-                val capturedOut = outCapture.callAttr("getvalue").toString().trim()
-                val capturedErr = errCapture.callAttr("getvalue").toString().trim()
-                val errorMsg = "Python output was: $capturedOut\nPython error was: $capturedErr"
-                
+            if (!success) {
                 val errorResponse = JSONObject()
                 errorResponse.put("status", "error")
-                errorResponse.put("message", errorMsg)
+                errorResponse.put("message", "All client attempts failed. Last error: $lastError")
                 
                 val response = JSObject()
                 response.put("result", errorResponse.toString())
@@ -125,7 +146,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             }
 
             val parsed = JSONObject(resultJson)
-            
             if (parsed.optString("status") == "success") {
                 val tempFilePath = parsed.getString("path")
                 val tempFile = File(tempFilePath)
@@ -145,11 +165,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                         }
                     }
                     tempFile.delete()
-                    
-                    val response = JSObject()
-                    response.put("result", resultJson)
-                    invoke.resolve(response)
-                    return
                 }
             }
 

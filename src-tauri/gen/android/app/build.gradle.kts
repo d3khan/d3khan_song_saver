@@ -69,7 +69,7 @@ chaquopy {
         version = "3.11"
         buildPython("C:/Users/User/AppData/Local/Programs/Python/Python311/python.exe")
         pip {
-            install("yt-dlp")
+            install("git+https://github.com/yt-dlp/yt-dlp.git@master")
             install("requests")
         }
     }
