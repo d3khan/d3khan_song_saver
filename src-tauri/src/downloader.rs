@@ -633,25 +633,40 @@ pub async fn download_batch(
                 match plugin_handle.run_mobile_plugin::<serde_json::Value>("downloadTrack", payload)
                 {
                     Ok(response) => {
-                        let result_str = response["result"].as_str().unwrap_or("");
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(result_str) {
-                            if json["status"] == "success" {
-                                downloaded_path =
-                                    Some(PathBuf::from(json["path"].as_str().unwrap_or("")));
-                            } else {
-                                error_msg = Some(
-                                    json["message"]
-                                        .as_str()
-                                        .unwrap_or("Unknown error")
-                                        .to_string(),
-                                );
+                        let result_str = response
+                            .get("result")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        // Emit the raw plugin output to the GUI
+                        let _ = app.emit("download-log", format!("Plugin Output: {}", result_str));
+
+                        let parsed: Result<serde_json::Value, _> = serde_json::from_str(result_str);
+                        match parsed {
+                            Ok(json) => {
+                                if json["status"] == "success" {
+                                    downloaded_path =
+                                        Some(PathBuf::from(json["path"].as_str().unwrap_or("")));
+                                } else {
+                                    error_msg = Some(
+                                        json["message"]
+                                            .as_str()
+                                            .unwrap_or("Unknown error")
+                                            .to_string(),
+                                    );
+                                }
                             }
-                        } else {
-                            error_msg = Some("Failed to parse Python JSON response".to_string());
+                            Err(_) => {
+                                error_msg =
+                                    Some("Failed to parse Python JSON response".to_string());
+                            }
                         }
                     }
                     Err(e) => {
-                        error_msg = Some(format!("Plugin error: {}", e));
+                        // Emit connection errors to the GUI
+                        let plugin_error = format!("Plugin execution failed: {}", e);
+                        let _ = app.emit("download-error", plugin_error.clone());
+                        error_msg = Some(plugin_error);
                     }
                 }
             }

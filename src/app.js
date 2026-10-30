@@ -74,6 +74,18 @@
       if (modal) modal.style.display = "flex";
       addLog("⏸ Batch paused: " + message, "warn");
     });
+
+    // Generic app-log listener for backend errors/messages
+    if (window.__TAURI__) {
+      window.__TAURI__.event.listen('app-log', (event) => {
+        // Use whatever your existing logging function is called, e.g., appendLog, log, etc.
+        if (typeof appendLog === 'function') {
+          appendLog(`[App] ${event.payload}`, 'info');
+        } else {
+          console.log(`[App Log] ${event.payload}`);
+        }
+      });
+    }
   }
 
   async function browseFolder() {

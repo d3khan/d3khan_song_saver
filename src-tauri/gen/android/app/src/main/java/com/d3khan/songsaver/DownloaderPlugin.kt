@@ -9,6 +9,7 @@ import app.tauri.plugin.JSObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
+import org.json.JSONObject
 
 @TauriPlugin
 class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
@@ -44,15 +45,20 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             val ffmpegPath = File(activity.filesDir, "ffmpeg").absolutePath
 
             val module = Python.getInstance().getModule("downloader")
-            val result = module.callAttr("download_track", query, outBase, ffmpegPath, song, artist).toString()
+            val resultJson = module.callAttr("download_track", query, outBase, ffmpegPath, song, artist)?.toString() ?: "null"
             
-            // Tauri v2 requires a JSObject to resolve the promise
             val response = JSObject()
-            response.put("result", result)
+            response.put("result", resultJson)
             invoke.resolve(response)
-            
         } catch (e: Exception) {
-            invoke.reject("Python error: ${e.message}")
+            // Catch Python/Chaquopy errors and package them as JSON
+            val errorResponse = JSONObject()
+            errorResponse.put("status", "error")
+            errorResponse.put("message", "Python Error: ${e.message}")
+            
+            val response = JSObject()
+            response.put("result", errorResponse.toString())
+            invoke.resolve(response)
         }
     }
 }
