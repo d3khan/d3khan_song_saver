@@ -4,9 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
-import androidx.appcompat.app.AppCompatActivity
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.ActivityResult
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -18,32 +17,7 @@ import java.io.File
 import org.json.JSONObject
 
 @TauriPlugin
-class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activity) {
-
-    private var pendingFolderInvoke: Invoke? = null
-
-    private val folderPickerLauncher = activity.registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val uri = result.data?.data
-            if (uri != null) {
-                // Take persistable permission so the app can write to this folder later
-                activity.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-                val response = JSObject()
-                response.put("path", uri.toString()) // Return content:// URI to Rust
-                pendingFolderInvoke?.resolve(response)
-            } else {
-                pendingFolderInvoke?.reject("No folder selected")
-            }
-        } else {
-            pendingFolderInvoke?.reject("No folder selected")
-        }
-        pendingFolderInvoke = null
-    }
+class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun ensurePython() {
         if (!Python.isStarted()) {
@@ -70,7 +44,7 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
         try {
             val args = invoke.getArgs()
             val query = args.getString("query")
-            val outBase = args.getString("out_base") // This will be a content:// URI
+            val outBase = args.getString("out_base") // This is now a content:// URI
             val song = args.getString("song")
             val artist = args.getString("artist")
 
@@ -86,7 +60,7 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
             val currentPath = environ.callAttr("get", "PATH")?.toString() ?: ""
             environ.callAttr("__setitem__", "PATH", "$ffmpegDir:$currentPath")
 
-            // 1. Download to a TEMPORARY folder that Python can write to natively
+            // 1. Download to a TEMPORARY folder that Python can write to
             val tempDir = File(activity.cacheDir, "temp_downloads")
             if (!tempDir.exists()) tempDir.mkdirs()
 
@@ -94,7 +68,7 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
             val resultJson = module.callAttr(
                 "download_track",
                 query,
-                tempDir.absolutePath, // Pass temp dir to Python!
+                tempDir.absolutePath,
                 ffmpegPath,
                 song,
                 artist
@@ -123,7 +97,6 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
                     }
                     tempFile.delete() // Cleanup
                     
-                    // Return success to Rust
                     val response = JSObject()
                     response.put("result", resultJson)
                     invoke.resolve(response)
@@ -131,7 +104,6 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
                 }
             }
 
-            // If we get here, something failed
             val response = JSObject()
             response.put("result", resultJson)
             invoke.resolve(response)
@@ -149,9 +121,30 @@ class DownloaderPlugin(private val activity: AppCompatActivity) : Plugin(activit
 
     @Command
     fun pickFolder(invoke: Invoke) {
-        pendingFolderInvoke = invoke
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        folderPickerLauncher.launch(intent)
+        // Use Tauri's built-in launcher
+        startActivityForResult(invoke, intent, "folderPickerResult")
+    }
+
+    @ActivityCallback
+    fun folderPickerResult(invoke: Invoke, result: ActivityResult) {
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                // Take persistable permission so the app can write to this folder later
+                activity.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                val response = JSObject()
+                response.put("path", uri.toString()) // Return content:// URI to Rust
+                invoke.resolve(response)
+            } else {
+                invoke.reject("No folder selected")
+            }
+        } else {
+            invoke.reject("No folder selected")
+        }
     }
 }
