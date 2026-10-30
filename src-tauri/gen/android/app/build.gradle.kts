@@ -54,6 +54,13 @@ android {
             )
         }
     }
+    
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         // Changed from VERSION_1_8 to VERSION_11 to fix compiler warnings
         sourceCompatibility = JavaVersion.VERSION_11
