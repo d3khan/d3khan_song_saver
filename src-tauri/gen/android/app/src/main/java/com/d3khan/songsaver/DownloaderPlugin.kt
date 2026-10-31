@@ -46,28 +46,26 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
             environ.callAttr("__setitem__", "PATH", "$nativeLibDir:$currentPath")
             environ.callAttr("__setitem__", "NATIVE_LIB_DIR", nativeLibDir)
 
-            // --- BULLETPROOF MONKEY PATCH ---
+            // --- CORRECTED MONKEY PATCH ---
             try {
                 val patchScript = """
                     import os
                     import yt_dlp
                     
                     # --- 1. SABR BYPASS (CRITICAL) ---
-                    # This must succeed. If it fails, downloads will throw HTTP 416.
                     try:
                         _orig_ydl_init = yt_dlp.YoutubeDL.__init__
                         def _patched_ydl_init(self, params=None, *args, **kwargs):
                             if params is None:
                                 params = {}
-                            if 'extractor_args' not in params:
-                                params['extractor_args'] = {}
-                            if 'youtube' not in params['extractor_args']:
-                                params['extractor_args']['youtube'] = {}
                             
-                            # Force TV client to bypass SABR
-                            params['extractor_args']['youtube']['player_client'] = ['tv', 'web_safari']
+                            # CORRECT FORMAT: list of strings, not nested dict
+                            # The ",override" flag forces these clients
+                            params['extractor_args'] = {
+                                'youtube': ['player_client=tv,web_safari,override']
+                            }
                             
-                            # Prevent HTTP 416 by disabling resumable downloads
+                            # Prevent HTTP 416
                             params['nopart'] = True
                             params['continuedl'] = False
                             
@@ -77,7 +75,6 @@ class DownloaderPlugin(private val activity: Activity) : Plugin(activity) {
                         print(f"SABR Patch Failed: {e}")
 
                     # --- 2. FFMPEG .SO OVERRIDE (OPTIONAL) ---
-                    # If this fails, the download will still succeed, but might not convert to MP3.
                     try:
                         from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
                         native_lib_dir = os.environ.get('NATIVE_LIB_DIR')
