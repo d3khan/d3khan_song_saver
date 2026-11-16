@@ -33,3 +33,5 @@ src/_preview_*.html
 
 build/
 TestDownloads/
+dist_out/
+venv/

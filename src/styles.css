@@ -1727,3 +1727,18 @@ button:disabled {
   text-overflow: ellipsis;
   margin-top: 2px;
 }
+
+/* ---------- media mode toggle ---------- */
+#media-mode-seg {
+  margin-top: 4px;
+}
+
+#media-mode-seg .seg-btn {
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+#media-mode-seg .seg-btn.is-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}

@@ -6,9 +6,9 @@ pub mod metadata;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use tauri::{
-    Manager, WindowEvent,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
+    Manager, WindowEvent,
 };
 
 pub struct AppState {
@@ -31,14 +31,13 @@ pub fn run() {
             });
             app.manage(batch::BatchControl::default());
 
-            // Create the System Tray
+            // System Tray
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
-
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .icon(app.default_window_icon().unwrap().clone()) // <-- ADDED ICON HERE
+                .icon(app.default_window_icon().unwrap().clone())
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
                     "show" => {
@@ -51,7 +50,6 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -63,8 +61,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::resolve_input,
             commands::resolve_bulk_input,
+            commands::search_youtube,
             commands::download_track,
             commands::pick_folder,
+            commands::get_settings,
+            commands::save_settings,
             batch::resume_batch,
         ])
         .run(tauri::generate_context!())

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 // -------------------- State Struct for Sync --------------------
 
@@ -44,6 +44,71 @@ fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<Tra
     }
 }
 
+// -------------------- Fast YouTube search --------------------
+
+pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
+    let target = format!("ytsearch{}:{}", limit, query.trim());
+
+    let output = std::process::Command::new("yt-dlp")
+        .args([
+            &target,
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            "--no-playlist",
+        ])
+        .output()
+        .map_err(|e| format!("yt-dlp search failed to start: {e}"))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp search failed: {err}"));
+    }
+
+    let mut results = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let title = v
+                .get("title")
+                .and_then(|x| x.as_str())
+                .unwrap_or("Unknown Title")
+                .to_string();
+            let uploader = v
+                .get("uploader")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.get("channel").and_then(|x| x.as_str()))
+                .unwrap_or("YouTube")
+                .to_string();
+            let duration_ms = v
+                .get("duration")
+                .and_then(|d| d.as_f64())
+                .map(|s| (s * 1000.0) as u64)
+                .unwrap_or(0);
+            let cover_url = Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", id));
+            let url = format!("https://www.youtube.com/watch?v={}", id);
+
+            results.push(TrackMeta {
+                id: url,
+                title,
+                artists: vec![uploader],
+                cover_url,
+                duration_ms,
+                folder_name: None,
+                ..Default::default()
+            });
+        }
+    }
+
+    Ok(results)
+}
+
 // -------------------- Input Router --------------------
 
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
@@ -52,61 +117,33 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
     if trimmed.contains("open.spotify.com/track/") {
         return fetch_spotify_track(trimmed).await;
     }
-
     if trimmed.contains("open.spotify.com/playlist/") || trimmed.contains("open.spotify.com/album/")
     {
         return fetch_spotify_playlist(trimmed).await;
     }
-
-    if (trimmed.contains("youtube.com") || trimmed.contains("youtu.be"))
-        && trimmed.contains("list=")
+    if (trimmed.contains("youtube.com") || trimmed.contains("youtu.be")) && trimmed.contains("list=")
     {
         return fetch_youtube_playlist(trimmed).await;
     }
-
     if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
         return fetch_youtube_track(trimmed).await;
     }
 
+    // Non-URL query → fast YouTube flat search, with disk cache.
     let cache_key = trimmed.to_lowercase();
     let mut cache = load_cache(app);
-
     if let Some(cached_results) = cache.get(&cache_key) {
         return Ok(cached_results.clone());
     }
 
-    let mut search = spotapi::SpotifySearch::new();
-    let results = search
-        .tracks(trimmed, 10)
-        .await
-        .map_err(|e| format!("Spotify search failed: {e}"))?;
-
+    let results = search_youtube(trimmed, 10).await?;
     if !results.is_empty() {
-        let mut mapped = Vec::new();
-        for track in results {
-            let track_id = track.uri.split(':').last().unwrap_or_default().to_string();
-            let track_url = format!("https://open.spotify.com/track/{}", track_id);
-
-            mapped.push(TrackMeta {
-                id: track_url,
-                title: track.name,
-                artists: track.artists,
-                album: track.album_name,
-                duration_ms: track.duration_ms as u64,
-                cover_url: None,
-                folder_name: None,
-                ..Default::default()
-            });
-        }
-
-        if !mapped.is_empty() {
-            cache.insert(cache_key, mapped.clone());
-            save_cache(app, &cache);
-        }
-        return Ok(mapped);
+        cache.insert(cache_key, results.clone());
+        save_cache(app, &cache);
+        return Ok(results);
     }
 
-    Err("No tracks found on Spotify for your query.".into())
+    Err("No tracks found on YouTube for your query.".into())
 }
 
 // -------------------- Spotify Playlist --------------------
@@ -119,8 +156,8 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         .split('?')
         .next()
         .unwrap_or_default();
-    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
 
+    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
     let client = reqwest::Client::new();
     let resp = client
         .get(&embed_url)
@@ -137,12 +174,11 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         .await
         .map_err(|e| format!("Failed to read page: {e}"))?;
 
-    let script_re =
-        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
-            .unwrap();
-    let script_match = script_re
-        .captures(&html)
-        .ok_or("Could not find track list data on the page. The link may be invalid or private.")?;
+    let script_re = Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
+        .unwrap();
+    let script_match = script_re.captures(&html).ok_or(
+        "Could not find track list data on the page. The link may be invalid or private.",
+    )?;
 
     let json_str = &script_match[1];
     let json: serde_json::Value =
@@ -153,6 +189,7 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         .as_str()
         .unwrap_or("Unknown Playlist")
         .to_string();
+
     let track_list = entity["trackList"]
         .as_array()
         .ok_or("This playlist is empty or could not be parsed.")?;
@@ -183,7 +220,6 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         if uri.is_empty() {
             continue;
         }
-
         let track_id = uri.split(':').last().unwrap_or_default();
         let track_url = format!("https://open.spotify.com/track/{}", track_id);
 
@@ -229,12 +265,10 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
                     playlist_name = p_name.to_string();
                 }
             }
-
             let video_id = json["id"].as_str().unwrap_or_default();
             if video_id.is_empty() {
                 continue;
             }
-
             let title = json["title"]
                 .as_str()
                 .unwrap_or("Unknown Title")
@@ -284,7 +318,6 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
         .map_err(|e| format!("Network error: {e}"))?;
 
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
-
     let title = json["title"]
         .as_str()
         .unwrap_or("YouTube Video")
@@ -307,7 +340,6 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
 
 async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String> {
     let client = reqwest::Client::new();
-
     let resp = client
         .get(spotify_url)
         .header(
@@ -382,21 +414,21 @@ fn playlist_display_name(meta: &TrackMeta) -> String {
     }
 }
 
+fn sync_key(meta: &TrackMeta, media_mode: &str) -> String {
+    format!("{}::{}", meta.id, media_mode)
+}
+
 // -------------------- Batch Downloader --------------------
-//
-// `overwrite_mode` == true  → skip *all* existence checks (state JSON + file
-//                              on disk), delete any existing file first, then
-//                              download unconditionally.
-// `overwrite_mode` == false → original sync behaviour: skip tracks present
-//                              in the state JSON or already on disk.
 
 pub async fn download_batch(
     app: &AppHandle,
     tracks: Vec<TrackMeta>,
     output_dir: &Path,
     overwrite_mode: bool,
+    media_mode: &str,
 ) -> Result<(), String> {
     let total = tracks.len();
+    let is_video = media_mode == "video";
 
     let app_data = app
         .path()
@@ -436,6 +468,7 @@ pub async fn download_batch(
         };
 
         // ---------------- Resolve target folder ----------------
+
         let mut target_dir = output_dir.to_path_buf();
         if let Some(folder) = &meta.folder_name {
             let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
@@ -453,6 +486,7 @@ pub async fn download_batch(
         let state_path = target_dir.join(".playlist_sync.json");
 
         // ---------------- Load / cache state for this folder ----------------
+
         let needs_load = current_folder_state
             .as_ref()
             .map(|(p, _)| p != &state_path)
@@ -462,7 +496,7 @@ pub async fn download_batch(
             let (mut state, mut upgraded) = if state_path.exists() {
                 match std::fs::read_to_string(&state_path)
                     .ok()
-                    .and_then(|c| serde_json::from_str::<PlaylistState>(&c).ok())
+                    .and_then(|c| serde_json::from_str(&c).ok())
                 {
                     Some(s) => (s, false),
                     None => (
@@ -510,9 +544,11 @@ pub async fn download_batch(
             .artists
             .join(", ")
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+
         let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
 
-        let possible_exts: &[&str] = if is_youtube {
+        // Media-mode-aware extensions.
+        let possible_exts: &[&str] = if is_video {
             &["mp4", "webm", "mkv", "m4a"]
         } else {
             &["mp3", "m4a", "opus"]
@@ -520,7 +556,8 @@ pub async fn download_batch(
 
         if !overwrite_mode {
             // ---------------- PRIMARY SKIP (sync mode only) ----------------
-            if state.downloaded_tracks.contains(&meta.id) {
+            let key = sync_key(meta, media_mode);
+            if state.downloaded_tracks.contains(&key) {
                 let _ = app.emit(
                     "download-progress",
                     json!({
@@ -537,7 +574,7 @@ pub async fn download_batch(
                 .map(|e| out_base.with_extension(e))
                 .find(|p| p.exists())
             {
-                state.downloaded_tracks.insert(meta.id.clone());
+                state.downloaded_tracks.insert(key);
                 let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
                 let _ = app.emit(
                     "download-progress",
@@ -554,10 +591,6 @@ pub async fn download_batch(
             }
         } else {
             // ---------------- OVERWRITE MODE: wipe existing files first ----------------
-            // This guarantees the sidecar writes a fresh copy instead of
-            // failing with "file already exists" or silently reusing the old
-            // file. If the subsequent download fails, the old file is gone —
-            // that's the point of overwrite mode.
             for ext in possible_exts {
                 let p = out_base.with_extension(ext);
                 if p.exists() {
@@ -573,13 +606,14 @@ pub async fn download_batch(
         }
 
         // ---------------- Download with retries ----------------
+
         let mut success = false;
         let mut attempts = 0u32;
         const MAX_ATTEMPTS: u32 = 3;
         let mut error_emitted = false;
         let mut bot_check_paused_once = false;
 
-        // 5-second pre-download wait — only before the first attempt of this track
+        // 5-second pre-download wait — only before the first attempt of this track.
         let _ = app.emit(
             "download-progress",
             json!({
@@ -624,6 +658,7 @@ pub async fn download_batch(
                     ffmpeg_str.as_str(),
                     meta.title.as_str(),
                     meta.artists.join(", ").as_str(),
+                    media_mode,
                 ]);
 
             let (mut rx, _child) = sidecar_command
@@ -678,8 +713,9 @@ pub async fn download_batch(
                         ));
                     }
                     None => {
-                        error_msg =
-                            Some("Downloader sidecar exited without a status message".to_string());
+                        error_msg = Some(
+                            "Downloader sidecar exited without a status message".to_string(),
+                        );
                     }
                     _ => {}
                 }
@@ -706,7 +742,10 @@ pub async fn download_batch(
                         let _ = app.emit(
                             "download-error",
                             json!({
-                                "error": format!("YouTube still requires verification for \"{}\". Skipping this track. Watch a video and retry the batch later.", meta.title)
+                                "error": format!(
+                                    "YouTube still requires verification for \"{}\". Skipping this track. Watch a video and retry the batch later.",
+                                    meta.title
+                                )
                             }),
                         );
                         error_emitted = true;
@@ -735,7 +774,9 @@ pub async fn download_batch(
 
                 let _ = app.emit(
                     "download-error",
-                    json!({ "error": format!("Failed to download {}: {}", meta.title, err) }),
+                    json!({
+                        "error": format!("Failed to download {}: {}", meta.title, err)
+                    }),
                 );
                 error_emitted = true;
                 break;
@@ -758,11 +799,9 @@ pub async fn download_batch(
         }
 
         if success {
-            // Keep the state file in sync in *both* modes so switching to
-            // sync mode later still sees a truthful record of what's on disk.
-            state.downloaded_tracks.insert(meta.id.clone());
+            let key = sync_key(meta, media_mode);
+            state.downloaded_tracks.insert(key);
             let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
-
             let _ = app.emit(
                 "download-progress",
                 json!({
@@ -776,7 +815,8 @@ pub async fn download_batch(
                 json!({
                     "error": format!(
                         "Failed to download {} after {} attempts",
-                        meta.title, attempts
+                        meta.title,
+                        attempts
                     )
                 }),
             );
@@ -787,6 +827,7 @@ pub async fn download_batch(
         "download-progress",
         json!({ "percent": 100.0, "status": "All done!" }),
     );
+
     Ok(())
 }
 
