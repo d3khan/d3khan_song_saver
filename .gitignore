@@ -36,5 +36,4 @@ TestDownloads/
 dist_out/
 venv/
 
-src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
-src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+src-tauri/binaries/*
