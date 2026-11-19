@@ -22,11 +22,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // --- EXPIRY GUARD ---
-            // Any version older than this date refuses to launch.
-            // Update this when you release a new major version.
-            const EXPIRY_UNIX: u64 = 1_798_761_600; // 2027-01-01 00:00:00 UTC
-
+            // --- EXPIRY GUARD (Jan 1, 2027) ---
+            const EXPIRY_UNIX: u64 = 1_798_761_600; 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -35,11 +32,7 @@ pub fn run() {
             if now >= EXPIRY_UNIX {
                 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
                 app.dialog()
-                    .message(
-                        "This version of d3khan song saver has expired.\n\n\
-                        Please download the latest release from:\n\
-                        https://github.com/d3khan/d3khan_song_saver/releases",
-                    )
+                    .message("This version of d3khan song saver has expired.\n\nPlease download the latest release with new features and improvements!")
                     .title("Version Expired")
                     .kind(MessageDialogKind::Error)
                     .blocking_show();
@@ -91,6 +84,7 @@ pub fn run() {
             commands::pick_folder,
             commands::get_settings,
             commands::save_settings,
+            commands::delete_orphaned_files, // <-- NEW COMMAND REGISTERED HERE
             batch::resume_batch,
         ])
         .run(tauri::generate_context!())

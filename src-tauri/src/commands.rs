@@ -206,3 +206,18 @@ pub async fn download_track(
 
     crate::downloader::download_batch(&app, metas, &out_path, overwrite, media).await
 }
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_orphaned_files(
+    files: Vec<String>,
+    state_path: String,
+) -> Result<(), String> {
+    for path_str in &files {
+        let p = std::path::Path::new(path_str);
+        if p.exists() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    crate::downloader::remove_files_from_manifest(std::path::Path::new(&state_path), &files);
+    Ok(())
+}

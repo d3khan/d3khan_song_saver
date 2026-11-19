@@ -10,6 +10,11 @@
     isBulkRunning: false,
   };
 
+  // --- NEW: Sync Deletion State Variables ---
+  let syncDeleteCountdown = null;
+  let pendingDeletionFiles = [];
+  let pendingDeletionStatePath = "";
+
   const $ = (id) => document.getElementById(id);
 
   function addLog(message, type = "info") {
@@ -68,6 +73,34 @@
       if (msgEl) msgEl.textContent = message;
       if (modal) modal.style.display = "flex";
       addLog("⏸ Batch paused: " + message, "warn");
+    });
+
+    // --- NEW: Sync Deletion Prompt Listener ---
+    window.__TAURI__.event.listen("sync-deletion-prompt", (event) => {
+      const { files, timeout_ms, state_path } = event.payload;
+      pendingDeletionFiles = files;
+      pendingDeletionStatePath = state_path;
+      
+      const modal = document.getElementById("sync-delete-modal");
+      const msgEl = document.getElementById("sync-delete-msg");
+      const timerEl = document.getElementById("sync-delete-timer");
+      
+      if (msgEl) msgEl.textContent = `${files.length} track(s) are no longer in the playlist. Delete them from your device?`;
+      if (modal) modal.style.display = "flex";
+      
+      let seconds = Math.floor(timeout_ms / 1000);
+      if (timerEl) timerEl.textContent = seconds;
+      
+      if (syncDeleteCountdown) clearInterval(syncDeleteCountdown);
+      syncDeleteCountdown = setInterval(() => {
+        seconds--;
+        if (timerEl) timerEl.textContent = seconds;
+        if (seconds <= 0) {
+          clearInterval(syncDeleteCountdown);
+          closeSyncDeleteModal();
+          addLog("Sync: Kept old files (auto-dismissed).", "info");
+        }
+      }, 1000);
     });
   }
 
@@ -217,9 +250,9 @@
       const results = isUrl
         ? await window.__TAURI__.core.invoke("resolve_input", { input: query })
         : await window.__TAURI__.core.invoke("search_youtube", {
-          query,
-          limit: 10,
-        });
+            query,
+            limit: 10,
+          });
 
       if (!results || results.length === 0) {
         container.innerHTML = `<div style="padding: 16px;">No results found.</div>`;
@@ -262,8 +295,8 @@
 
       const dur = track.durationMs
         ? `${Math.floor(track.durationMs / 60000)}:${String(
-          Math.floor((track.durationMs % 60000) / 1000)
-        ).padStart(2, "0")}`
+            Math.floor((track.durationMs % 60000) / 1000)
+          ).padStart(2, "0")}`
         : "";
 
       const metaParts = [track.artist];
@@ -422,6 +455,18 @@
     }
   }
 
+  // --- NEW: Sync Deletion Helper Functions ---
+  function closeSyncDeleteModal() {
+    const modal = document.getElementById("sync-delete-modal");
+    if (modal) modal.style.display = "none";
+    if (syncDeleteCountdown) {
+      clearInterval(syncDeleteCountdown);
+      syncDeleteCountdown = null;
+    }
+    pendingDeletionFiles = [];
+    pendingDeletionStatePath = "";
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     $("browse-btn")?.addEventListener("click", browseFolder);
     $("start-btn")?.addEventListener("click", startJob);
@@ -431,7 +476,6 @@
       if (e.key === "Enter") triggerSearch();
     });
 
-    // Debounced auto-search for text queries (does not fire for URLs).
     let searchTimer = null;
     $("url-input")?.addEventListener("input", () => {
       clearTimeout(searchTimer);
@@ -476,6 +520,26 @@
       } catch (e) {
         addLog("Could not resume batch: " + e, "error");
       }
+    });
+
+    // --- NEW: Sync Deletion Button Handlers ---
+    document.getElementById("sync-delete-cancel-btn")?.addEventListener("click", () => {
+      closeSyncDeleteModal();
+      addLog("Sync: Kept old files.", "info");
+    });
+
+    document.getElementById("sync-delete-confirm-btn")?.addEventListener("click", async () => {
+      if (pendingDeletionFiles.length === 0) return;
+      try {
+        await window.__TAURI__.core.invoke("delete_orphaned_files", {
+          files: pendingDeletionFiles,
+          statePath: pendingDeletionStatePath
+        });
+        addLog(`Sync: Deleted ${pendingDeletionFiles.length} old file(s).`, "success");
+      } catch (e) {
+        addLog("Sync deletion failed: " + e, "error");
+      }
+      closeSyncDeleteModal();
     });
 
     let bulkSearchTimer = null;

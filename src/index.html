@@ -170,7 +170,22 @@
       </div>
     </div>
   </div>
-
+  <!-- Sync Deletion Prompt Modal -->
+  <div id="sync-delete-modal" role="dialog" aria-modal="true"
+    style="position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); padding: 24px;">
+    <div
+      style="background: var(--surface, #1e1e1e); color: var(--text, #ffffff); border: 1px solid var(--border, #333); border-radius: 12px; max-width: 520px; width: 100%; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
+      <h2 style="margin: 0 0 12px; font-size: 1.15rem;">Sync: Remove old tracks?</h2>
+      <p id="sync-delete-msg" style="margin: 0 0 16px; line-height: 1.5;">These tracks are no longer in the playlist.
+        Delete them from your device?</p>
+      <p style="margin: 0 0 20px; color: var(--text-dim, #aaa); font-size: 14px;">Auto-dismissing in <span
+          id="sync-delete-timer" style="font-weight: bold; color: #fff;">10</span> seconds...</p>
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button type="button" id="sync-delete-cancel-btn" class="btn ghost">Keep Files</button>
+        <button type="button" id="sync-delete-confirm-btn" class="btn danger">Delete Files</button>
+      </div>
+    </div>
+  </div>
   <script src="./app.js"></script>
 </body>
 
