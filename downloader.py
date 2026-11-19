@@ -1,6 +1,5 @@
 import sys
 import os
-import subprocess
 import json
 from typing import Any, Optional
 from urllib.parse import quote
@@ -16,44 +15,6 @@ def parse_spotify_title(title: Optional[str]) -> tuple[str, str]:
         artist, track = title.split(" - ", 1)
         return artist.strip(), track.strip()
     return "", title.strip()
-
-
-def has_audio_stream(
-    file_path: str, ffmpeg_dir: Optional[str] = None
-) -> tuple[bool, float]:
-    ffprobe_cmd = "ffprobe"
-    if ffmpeg_dir:
-        potential_ffprobe = os.path.join(
-            ffmpeg_dir, "ffprobe.exe" if os.name == "nt" else "ffprobe"
-        )
-        if os.path.exists(potential_ffprobe):
-            ffprobe_cmd = potential_ffprobe
-    try:
-        result = subprocess.run(
-            [
-                ffprobe_cmd,
-                "-v",
-                "error",
-                "-select_streams",
-                "a:0",
-                "-show_entries",
-                "stream=codec_name,duration",
-                "-of",
-                "csv=p=0",
-                file_path,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        line = result.stdout.strip()
-        if not line:
-            return False, 0.0
-        parts = line.split(",")
-        duration = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
-        return True, duration
-    except Exception:
-        return False, 0.0
 
 
 def cleanup_leftovers(out_base: str) -> None:
@@ -153,11 +114,31 @@ def download_track(
             base = os.path.splitext(filename)[0]
             final_file = base + (".mp4" if is_video else ".mp3")
 
+            # Verification without ffprobe: file must exist and be non-trivial.
+            # FFmpeg already produced this file, so if it's on disk with
+            # reasonable size, it's valid.
             if not os.path.exists(final_file):
                 cleanup_leftovers(out_base)
                 print(
                     json.dumps(
                         {"status": "error", "message": f"File not found: {final_file}"}
+                    )
+                )
+                return
+
+            size = os.path.getsize(final_file)
+            if size < 10_000:  # < 10 KB is never a real audio/video file
+                cleanup_leftovers(out_base)
+                try:
+                    os.remove(final_file)
+                except Exception:
+                    pass
+                print(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "message": f"Output too small ({size} bytes) — likely a failed download",
+                        }
                     )
                 )
                 return
@@ -167,18 +148,7 @@ def download_track(
         return
 
     cleanup_leftovers(out_base)
-
-    ffmpeg_dir: Optional[str] = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
-    has_audio, _duration = has_audio_stream(final_file, ffmpeg_dir)
-
-    if has_audio:
-        print(json.dumps({"status": "success", "path": final_file}))
-    else:
-        print(
-            json.dumps(
-                {"status": "error", "message": "No audio stream found in the file!"}
-            )
-        )
+    print(json.dumps({"status": "success", "path": final_file}))
 
 
 def main() -> None:

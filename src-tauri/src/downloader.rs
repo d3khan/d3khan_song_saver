@@ -44,6 +44,48 @@ fn save_cache(app: &AppHandle, cache: &std::collections::HashMap<String, Vec<Tra
     }
 }
 
+// -------------------- Bundled binary discovery --------------------
+
+fn find_bundled_binary(name: &str) -> Option<PathBuf> {
+    let triple = env!("TAURI_ENV_TARGET_TRIPLE");
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    let direct_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    let direct = exe_dir.join(&direct_name);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    let suffixed_name = if cfg!(windows) {
+        format!("{name}-{triple}.exe")
+    } else {
+        format!("{name}-{triple}")
+    };
+    for ancestor in exe_dir.ancestors() {
+        let candidate = ancestor.join("binaries").join(&suffixed_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn find_ffmpeg() -> Option<PathBuf> {
+    if let Some(p) = find_bundled_binary("ffmpeg") {
+        return Some(p);
+    }
+    if let Ok(p) = which::which("ffmpeg") {
+        return Some(p);
+    }
+    None
+}
+
 // -------------------- Fast YouTube search --------------------
 
 pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
@@ -56,6 +98,8 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, S
             "--dump-json",
             "--no-warnings",
             "--no-playlist",
+            "--extractor-retries",
+            "1",
         ])
         .output()
         .map_err(|e| format!("yt-dlp search failed to start: {e}"))?;
@@ -129,7 +173,6 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
         return fetch_youtube_track(trimmed).await;
     }
 
-    // Non-URL query → fast YouTube flat search, with disk cache.
     let cache_key = trimmed.to_lowercase();
     let mut cache = load_cache(app);
     if let Some(cached_results) = cache.get(&cache_key) {
@@ -146,25 +189,195 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
     Err("No tracks found on YouTube for your query.".into())
 }
 
-// -------------------- Spotify Playlist --------------------
+// -------------------- Spotify helpers --------------------
 
-async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
-    let id = url
-        .split('/')
-        .last()
-        .unwrap_or_default()
-        .split('?')
+fn extract_spotify_id(url: &str, kind: &str) -> Result<String, String> {
+    let marker = format!("open.spotify.com/{}/", kind);
+    let after = url
+        .split(&marker)
+        .nth(1)
+        .ok_or_else(|| format!("Could not find {} ID in URL", kind))?;
+    after
+        .split(['?', '/'])
         .next()
-        .unwrap_or_default();
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Empty {} ID", kind))
+}
 
-    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
+/// Get an anonymous Spotify access token by reading the `__NEXT_DATA__`
+/// embedded in the playlist's public embed page.
+///
+/// This replaces the old `get_access_token` HTTP endpoint, which Spotify
+/// stopped serving to plain clients (it now returns HTML instead of JSON,
+/// causing `error decoding response body`).
+///
+/// The token lives at:
+///   `props.pageProps.state.settings.session.accessToken`
+async fn get_spotify_token_from_embed(playlist_id: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
+    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", playlist_id);
+
     let resp = client
         .get(&embed_url)
         .header(
             "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| format!("Spotify embed request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Spotify embed returned HTTP {}", resp.status()));
+    }
+
+    // Read as text first — this is the fix for "error decoding response body".
+    let html = resp
+        .text()
+        .await
+        .map_err(|e| format!("Spotify embed read failed: {e}"))?;
+
+    let script_re =
+        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
+            .map_err(|e| format!("Regex build failed: {e}"))?;
+    let captures = script_re
+        .captures(&html)
+        .ok_or("Could not find __NEXT_DATA__ in Spotify embed page")?;
+
+    let json: serde_json::Value = serde_json::from_str(&captures[1])
+        .map_err(|e| format!("Spotify __NEXT_DATA__ parse failed: {e}"))?;
+
+    json["props"]["pageProps"]["state"]["settings"]["session"]["accessToken"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Could not find accessToken in Spotify __NEXT_DATA__".to_string())
+}
+
+// -------------------- Spotify Playlist (SpotAPI — full pagination) --------------------
+
+async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
+    use spotapi::PublicPlaylist;
+
+    let mut playlist = PublicPlaylist::new(url);
+
+    // get_tracks() handles pagination automatically via Spotify's internal
+    // guest-auth API — returns ALL tracks regardless of playlist size.
+    let tracks_json = playlist
+        .get_tracks()
+        .await
+        .map_err(|e| format!("SpotAPI playlist fetch failed: {e}"))?;
+
+    if tracks_json.is_empty() {
+        return Err("The playlist has no tracks.".to_string());
+    }
+
+    // Try to get the real playlist name from metadata; fall back to a generic label.
+    let playlist_name = playlist
+        .get_playlist_info(1, 0)
+        .await
+        .ok()
+        .and_then(|v| {
+            v.get("data")
+                .and_then(|d| d.get("playlistV2"))
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "Spotify Playlist".to_string());
+
+    let mut mapped = Vec::new();
+
+    for (i, track_json) in tracks_json.iter().enumerate() {
+        let data = match track_json.get("itemV2").and_then(|i| i.get("data")) {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let name = data
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Unknown Title");
+
+        let uri = data
+            .get("uri")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default();
+
+        if uri.is_empty() {
+            continue;
+        }
+
+        let track_id = uri.split(':').last().unwrap_or_default();
+        let track_url = format!("https://open.spotify.com/track/{}", track_id);
+
+        let artists = data
+            .get("artists")
+            .and_then(|a| a.get("items"))
+            .and_then(|items| items.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| {
+                        a.get("profile")
+                            .and_then(|p| p.get("name"))
+                            .and_then(|n| n.as_str())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "Unknown Artist".to_string());
+
+        let cover_url = data
+            .get("albumOfTrack")
+            .and_then(|a| a.get("coverArt"))
+            .and_then(|c| c.get("sources"))
+            .and_then(|s| s.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|src| src.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+
+        let duration_ms = data
+            .get("duration")
+            .and_then(|d| d.get("totalMilliseconds"))
+            .and_then(|m| m.as_u64())
+            .unwrap_or(0);
+
+        mapped.push(TrackMeta {
+            id: track_url,
+            title: name.to_string(),
+            artists: vec![artists],
+            album: String::new(),
+            duration_ms,
+            cover_url,
+            track_number: (i + 1) as u32,
+            folder_name: Some(playlist_name.clone()),
+            playlist_url: Some(url.to_string()),
+            ..Default::default()
+        });
+    }
+
+    if mapped.is_empty() {
+        return Err("Could not parse any tracks from the Spotify playlist.".to_string());
+    }
+
+    Ok(mapped)
+}
+
+async fn fetch_spotify_playlist_legacy(url: &str) -> Result<Vec<TrackMeta>, String> {
+    let id = extract_spotify_id(url, "playlist")
+        .or_else(|_| extract_spotify_id(url, "album"))?;
+    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&embed_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -174,15 +387,15 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         .await
         .map_err(|e| format!("Failed to read page: {e}"))?;
 
-    let script_re = Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
-        .unwrap();
-    let script_match = script_re.captures(&html).ok_or(
-        "Could not find track list data on the page. The link may be invalid or private.",
-    )?;
+    let script_re =
+        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
+            .unwrap();
+    let script_match = script_re
+        .captures(&html)
+        .ok_or("Could not find track list data on the page.")?;
 
-    let json_str = &script_match[1];
-    let json: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&script_match[1])
+        .map_err(|e| format!("Failed to parse JSON: {e}"))?;
 
     let entity = &json["props"]["pageProps"]["state"]["data"]["entity"];
     let playlist_name = entity["name"]
@@ -194,10 +407,6 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         .as_array()
         .ok_or("This playlist is empty or could not be parsed.")?;
 
-    if track_list.is_empty() {
-        return Err("The playlist has no tracks.".to_string());
-    }
-
     let playlist_cover = entity["coverArt"]["sources"]
         .as_array()
         .and_then(|sources| sources.first())
@@ -207,28 +416,22 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
     let mut mapped = Vec::new();
     for (i, track) in track_list.iter().enumerate() {
         let uri = track["uri"].as_str().unwrap_or_default();
-        let title = track["title"]
-            .as_str()
-            .unwrap_or("Unknown Title")
-            .to_string();
-        let artist = track["subtitle"]
-            .as_str()
-            .unwrap_or("Unknown Artist")
-            .to_string();
-        let duration_ms = track["duration"].as_u64().unwrap_or(0);
-
         if uri.is_empty() {
             continue;
         }
         let track_id = uri.split(':').last().unwrap_or_default();
         let track_url = format!("https://open.spotify.com/track/{}", track_id);
-
         mapped.push(TrackMeta {
             id: track_url,
-            title,
-            artists: vec![artist],
-            album: String::new(),
-            duration_ms,
+            title: track["title"]
+                .as_str()
+                .unwrap_or("Unknown Title")
+                .to_string(),
+            artists: vec![track["subtitle"]
+                .as_str()
+                .unwrap_or("Unknown Artist")
+                .to_string()],
+            duration_ms: track["duration"].as_u64().unwrap_or(0),
             cover_url: playlist_cover.clone(),
             track_number: (i + 1) as u32,
             folder_name: Some(playlist_name.clone()),
@@ -237,16 +440,32 @@ async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
         });
     }
 
+    if mapped.is_empty() {
+        return Err("The playlist has no tracks.".to_string());
+    }
     Ok(mapped)
 }
 
-// -------------------- YouTube Playlist --------------------
+// -------------------- YouTube Playlist (fast, skip webpage) --------------------
 
 async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
+    // --extractor-args "youtubetab:skip=webpage" skips the slow initial
+    // playlist-page download. This is the difference between ~100 s and
+    // ~5 s on small playlists.
     let output = std::process::Command::new("yt-dlp")
-        .arg("--flat-playlist")
-        .arg("--dump-json")
-        .arg(url)
+        .args([
+            "--flat-playlist",
+            "--dump-json",
+            "--yes-playlist",
+            "--ignore-errors",
+            "--extractor-args",
+            "youtubetab:skip=webpage",
+            "--extractor-retries",
+            "1",
+            "--socket-timeout",
+            "15",
+            url,
+        ])
         .output()
         .map_err(|e| format!("Failed to run yt-dlp for playlist: {e}"))?;
 
@@ -257,10 +476,11 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut mapped = Vec::new();
     let mut playlist_name = "YouTube Playlist".to_string();
+    let mut track_number = 0u32;
 
-    for (i, line) in stdout.lines().enumerate() {
+    for line in stdout.lines() {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            if i == 0 {
+            if track_number == 0 {
                 if let Some(p_name) = json["playlist_title"].as_str() {
                     playlist_name = p_name.to_string();
                 }
@@ -281,11 +501,13 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
             let cover_url = Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", video_id));
             let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
 
+            track_number += 1;
             mapped.push(TrackMeta {
                 id: video_url,
                 title,
                 artists: vec![uploader],
                 cover_url,
+                track_number,
                 folder_name: Some(playlist_name.clone()),
                 playlist_url: Some(url.to_string()),
                 ..Default::default()
@@ -309,10 +531,7 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
 
     let resp = client
         .get(&oembed_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -342,10 +561,7 @@ async fn fetch_spotify_track(spotify_url: &str) -> Result<Vec<TrackMeta>, String
     let client = reqwest::Client::new();
     let resp = client
         .get(spotify_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -418,6 +634,36 @@ fn sync_key(meta: &TrackMeta, media_mode: &str) -> String {
     format!("{}::{}", meta.id, media_mode)
 }
 
+// -------------------- Audio-from-existing-video conversion --------------------
+
+async fn convert_existing_video_to_audio(
+    video_path: &Path,
+    audio_path: &Path,
+    ffmpeg: &Path,
+) -> Result<(), String> {
+    let output = tokio::process::Command::new(ffmpeg)
+        .args([
+            "-i",
+            video_path.to_str().unwrap_or_default(),
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            "-y",
+            audio_path.to_str().unwrap_or_default(),
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg conversion failed: {stderr}"));
+    }
+    Ok(())
+}
+
 // -------------------- Batch Downloader --------------------
 
 pub async fn download_batch(
@@ -430,30 +676,12 @@ pub async fn download_batch(
     let total = tracks.len();
     let is_video = media_mode == "video";
 
-    let app_data = app
-        .path()
-        .app_local_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
-
-    #[cfg(target_os = "windows")]
-    let ffmpeg_name = "ffmpeg.exe";
-    #[cfg(not(target_os = "windows"))]
-    let ffmpeg_name = "ffmpeg";
-
-    let mut ffmpeg_path = app_data.join(ffmpeg_name);
-    if !ffmpeg_path.exists() {
-        ffmpeg_path = app_data.join("bin").join(ffmpeg_name);
-    }
-    #[cfg(target_os = "linux")]
-    if !ffmpeg_path.exists() {
-        ffmpeg_path = PathBuf::from("/usr/lib/d3khan-song-saver/bin").join(ffmpeg_name);
-    }
-
-    let ffmpeg_str = if ffmpeg_path.exists() {
-        ffmpeg_path.to_string_lossy().to_string()
-    } else {
-        String::new()
-    };
+    let ffmpeg_path = find_ffmpeg().ok_or_else(|| {
+        "FFmpeg not found. Expected a bundled binary next to the app executable \
+         or `ffmpeg` on PATH."
+            .to_string()
+    })?;
+    let ffmpeg_str = ffmpeg_path.to_string_lossy().to_string();
 
     let mut current_folder_state: Option<(PathBuf, PlaylistState)> = None;
 
@@ -467,25 +695,24 @@ pub async fn download_batch(
             format!("{} {}", meta.title, meta.artists.join(", "))
         };
 
-        // ---------------- Resolve target folder ----------------
-
+        let mut audio_dir = output_dir.to_path_buf();
         let mut target_dir = output_dir.to_path_buf();
+
         if let Some(folder) = &meta.folder_name {
             let safe_folder = folder.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-            let current_folder_name = target_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if current_folder_name != safe_folder {
-                target_dir = target_dir.join(&safe_folder);
-            }
+            audio_dir = output_dir.join(&safe_folder);
+            target_dir = if is_video {
+                audio_dir.join("videos")
+            } else {
+                audio_dir.clone()
+            };
             std::fs::create_dir_all(&target_dir)
                 .map_err(|e| format!("Failed to create playlist folder: {e}"))?;
+        } else if is_video {
+            target_dir = output_dir.to_path_buf();
         }
 
-        let state_path = target_dir.join(".playlist_sync.json");
-
-        // ---------------- Load / cache state for this folder ----------------
+        let state_path = audio_dir.join(".playlist_sync.json");
 
         let needs_load = current_folder_state
             .as_ref()
@@ -545,9 +772,76 @@ pub async fn download_batch(
             .join(", ")
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
 
-        let out_base = target_dir.join(format!("{} - {}", safe_title, safe_artist));
+        let file_stem = format!("{} - {}", safe_title, safe_artist);
 
-        // Media-mode-aware extensions.
+        let out_base = target_dir.join(&file_stem);
+        let audio_base = audio_dir.join(&file_stem);
+
+        if !is_video {
+            let candidate_video_bases = vec![
+                audio_dir.join(&file_stem),
+                audio_dir.join("videos").join(&file_stem),
+            ];
+
+            let mut converted = false;
+            for base in &candidate_video_bases {
+                for ext in &["mp4", "webm", "mkv"] {
+                    let video_path = base.with_extension(ext);
+                    if !video_path.exists() {
+                        continue;
+                    }
+                    let audio_path = audio_base.with_extension("mp3");
+                    if audio_path.exists() && !overwrite_mode {
+                        converted = true;
+                        break;
+                    }
+                    let _ = app.emit(
+                        "download-progress",
+                        json!({
+                            "percent": (i as f64 / total as f64) * 100.0,
+                            "status": format!("Converting existing video to MP3: {}", meta.title)
+                        }),
+                    );
+                    match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path)
+                        .await
+                    {
+                        Ok(()) => {
+                            let key = sync_key(meta, "audio");
+                            state.downloaded_tracks.insert(key);
+                            let _ = std::fs::write(
+                                &state_path,
+                                serde_json::to_string_pretty(state).unwrap(),
+                            );
+                            let _ = app.emit(
+                                "download-progress",
+                                json!({
+                                    "percent": ((i as f64 + 1.0) / total as f64) * 100.0,
+                                    "status": format!("Converted (bandwidth saved): {}", meta.title)
+                                }),
+                            );
+                            converted = true;
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = app.emit(
+                                "download-error",
+                                json!({
+                                    "error": format!("Video→audio conversion failed for {}: {}", meta.title, e)
+                                }),
+                            );
+                        }
+                    }
+                }
+                if converted {
+                    break;
+                }
+            }
+
+            if converted {
+                continue;
+            }
+        }
+
         let possible_exts: &[&str] = if is_video {
             &["mp4", "webm", "mkv", "m4a"]
         } else {
@@ -555,7 +849,6 @@ pub async fn download_batch(
         };
 
         if !overwrite_mode {
-            // ---------------- PRIMARY SKIP (sync mode only) ----------------
             let key = sync_key(meta, media_mode);
             if state.downloaded_tracks.contains(&key) {
                 let _ = app.emit(
@@ -568,7 +861,6 @@ pub async fn download_batch(
                 continue;
             }
 
-            // ---------------- SECONDARY SKIP (sync mode only) ----------------
             if let Some(existing) = possible_exts
                 .iter()
                 .map(|e| out_base.with_extension(e))
@@ -590,7 +882,6 @@ pub async fn download_batch(
                 continue;
             }
         } else {
-            // ---------------- OVERWRITE MODE: wipe existing files first ----------------
             for ext in possible_exts {
                 let p = out_base.with_extension(ext);
                 if p.exists() {
@@ -605,15 +896,12 @@ pub async fn download_batch(
             }
         }
 
-        // ---------------- Download with retries ----------------
-
         let mut success = false;
         let mut attempts = 0u32;
         const MAX_ATTEMPTS: u32 = 3;
         let mut error_emitted = false;
         let mut bot_check_paused_once = false;
 
-        // 5-second pre-download wait — only before the first attempt of this track.
         let _ = app.emit(
             "download-progress",
             json!({
@@ -831,15 +1119,7 @@ pub async fn download_batch(
     Ok(())
 }
 
-async fn tag_file(app: &AppHandle, path: &Path, _meta: &TrackMeta) -> Result<(), String> {
-    let jpg_path = path.with_extension("jpg");
-    if jpg_path.exists() {
-        if std::fs::remove_file(&jpg_path).is_ok() {
-            let _ = app.emit(
-                "download-log",
-                json!({ "message": format!("Cleaned backup .jpg: {}", jpg_path.display()) }),
-            );
-        }
-    }
+async fn tag_file(app: &AppHandle, _path: &Path, _meta: &TrackMeta) -> Result<(), String> {
+    let _ = app;
     Ok(())
 }

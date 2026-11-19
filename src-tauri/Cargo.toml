@@ -1,6 +1,6 @@
 [package]
 name = "d3khan-song-saver"
-version = "0.2.1"
+version = "0.2.5"
 description = "d3khan song saver"
 authors = ["d3khan"]
 edition = "2024"
@@ -26,6 +26,7 @@ urlencoding = "2.1"
 bincode = "1.3"
 spotapi = "0.2.4"
 regex = "1"
+which = "6"
 
 [profile.release]
 codegen-units = 1
