@@ -75,9 +75,21 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn find_ffmpeg() -> Option<PathBuf> {
-    if let Some(p) = find_bundled_binary("ffmpeg") { return Some(p); }
-    if let Ok(p) = which::which("ffmpeg") { return Some(p); }
+fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
+    // 1. Check Tauri's private resources directory (bundled privately, no system conflicts)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let ffmpeg_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let private_ffmpeg = resource_dir.join(ffmpeg_name);
+        if private_ffmpeg.exists() {
+            return Some(private_ffmpeg);
+        }
+    }
+    
+    // 2. Fallback: Check if the user has it installed on their system PATH
+    if let Ok(p) = which::which("ffmpeg") {
+        return Some(p);
+    }
+    
     None
 }
 
@@ -309,7 +321,7 @@ pub async fn download_batch(
 ) -> Result<(), String> {
     let total = tracks.len();
     let is_video = media_mode == "video";
-    let ffmpeg_path = find_ffmpeg().ok_or_else(|| "FFmpeg not found.".to_string())?;
+    let ffmpeg_path = find_ffmpeg(app).ok_or_else(|| "FFmpeg not found.".to_string())?;
     let ffmpeg_str = ffmpeg_path.to_string_lossy().to_string();
 
     let mut current_folder_state: Option<(PathBuf, PlaylistState)> = None;
