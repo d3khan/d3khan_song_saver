@@ -7,7 +7,6 @@ from urllib.parse import quote
 import requests
 import yt_dlp
 
-
 def parse_spotify_title(title: Optional[str]) -> tuple[str, str]:
     if not title:
         return "", ""
@@ -16,16 +15,14 @@ def parse_spotify_title(title: Optional[str]) -> tuple[str, str]:
         return artist.strip(), track.strip()
     return "", title.strip()
 
-
 def cleanup_leftovers(out_base: str) -> None:
-    for ext in [".webp", ".png", ".temp.mp3", ".temp.mp4"]:
+    for ext in [".webp", ".png", ".temp.mp3", ".temp.mp4", ".part", ".ytdl"]:
         leftover = out_base + ext
         if os.path.exists(leftover):
             try:
                 os.remove(leftover)
             except Exception:
                 pass
-
 
 def download_track(
     search_query: str,
@@ -61,11 +58,11 @@ def download_track(
             ],
         }
     else:
-        metadata_args: list[str] = []
+        metadata_args = []
         if song:
-            metadata_args += ["-metadata", f"title={song}"]
+            metadata_args.extend(["-metadata", f"title={song}"])
         if artist:
-            metadata_args += ["-metadata", f"artist={artist}"]
+            metadata_args.extend(["-metadata", f"artist={artist}"])
 
         ydl_opts = {
             "format": "bestaudio/best",
@@ -96,8 +93,12 @@ def download_track(
     if not search_query.startswith("http"):
         ydl_opts["default_search"] = "ytsearch1"
 
+    # FIX: ffmpeg_location must be a DIRECTORY, not the executable path
     if ffmpeg_path and os.path.exists(ffmpeg_path):
-        ydl_opts["ffmpeg_location"] = ffmpeg_path
+        if os.path.isfile(ffmpeg_path):
+            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
+        else:
+            ydl_opts["ffmpeg_location"] = ffmpeg_path
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
@@ -110,13 +111,22 @@ def download_track(
                     )
                 )
                 return
+            
             filename = ydl.prepare_filename(info)
             base = os.path.splitext(filename)[0]
-            final_file = base + (".mp4" if is_video else ".mp3")
+            
+            # FIX: Dynamically find the actual downloaded file extension
+            possible_exts = [".mp4", ".webm", ".mkv", ".m4a"] if is_video else [".mp3", ".m4a", ".opus", ".webm"]
+            final_file = None
+            for ext in possible_exts:
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    final_file = candidate
+                    break
+            
+            if not final_file:
+                final_file = filename # Fallback
 
-            # Verification without ffprobe: file must exist and be non-trivial.
-            # FFmpeg already produced this file, so if it's on disk with
-            # reasonable size, it's valid.
             if not os.path.exists(final_file):
                 cleanup_leftovers(out_base)
                 print(
@@ -150,7 +160,6 @@ def download_track(
     cleanup_leftovers(out_base)
     print(json.dumps({"status": "success", "path": final_file}))
 
-
 def main() -> None:
     if len(sys.argv) >= 4:
         query = sys.argv[1]
@@ -176,7 +185,6 @@ def main() -> None:
         os.makedirs(out_dir, exist_ok=True)
         out_base = os.path.join(out_dir, f"{song} - {artist}")
         download_track(search_query, out_base, ffmpeg, song, artist, "audio")
-
 
 if __name__ == "__main__":
     main()

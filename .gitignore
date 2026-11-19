@@ -36,4 +36,4 @@ TestDownloads/
 dist_out/
 venv/
 
-src-tauri/binaries/*
+src-tauri/binaries/

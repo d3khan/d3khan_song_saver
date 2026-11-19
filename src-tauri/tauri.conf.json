@@ -32,6 +32,7 @@
     ],
     "externalBin": [
       "binaries/downloader",
+      "binaries/spotify_meta",
       "binaries/ffmpeg"
     ],
     "icon": [
