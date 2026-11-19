@@ -205,245 +205,109 @@ fn extract_spotify_id(url: &str, kind: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Empty {} ID", kind))
 }
 
-/// Get an anonymous Spotify access token by reading the `__NEXT_DATA__`
-/// embedded in the playlist's public embed page.
-///
-/// This replaces the old `get_access_token` HTTP endpoint, which Spotify
-/// stopped serving to plain clients (it now returns HTML instead of JSON,
-/// causing `error decoding response body`).
-///
-/// The token lives at:
-///   `props.pageProps.state.settings.session.accessToken`
-async fn get_spotify_token_from_embed(playlist_id: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", playlist_id);
-
-    let resp = client
-        .get(&embed_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
-        .header(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .send()
-        .await
-        .map_err(|e| format!("Spotify embed request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Spotify embed returned HTTP {}", resp.status()));
-    }
-
-    // Read as text first — this is the fix for "error decoding response body".
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| format!("Spotify embed read failed: {e}"))?;
-
-    let script_re =
-        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
-            .map_err(|e| format!("Regex build failed: {e}"))?;
-    let captures = script_re
-        .captures(&html)
-        .ok_or("Could not find __NEXT_DATA__ in Spotify embed page")?;
-
-    let json: serde_json::Value = serde_json::from_str(&captures[1])
-        .map_err(|e| format!("Spotify __NEXT_DATA__ parse failed: {e}"))?;
-
-    json["props"]["pageProps"]["state"]["settings"]["session"]["accessToken"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Could not find accessToken in Spotify __NEXT_DATA__".to_string())
-}
-
 // -------------------- Spotify Playlist (SpotAPI — full pagination) --------------------
 
 async fn fetch_spotify_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
-    use spotapi::PublicPlaylist;
-
-    let mut playlist = PublicPlaylist::new(url);
-
-    // get_tracks() handles pagination automatically via Spotify's internal
-    // guest-auth API — returns ALL tracks regardless of playlist size.
-    let tracks_json = playlist
-        .get_tracks()
-        .await
-        .map_err(|e| format!("SpotAPI playlist fetch failed: {e}"))?;
-
-    if tracks_json.is_empty() {
-        return Err("The playlist has no tracks.".to_string());
-    }
-
-    // Try to get the real playlist name from metadata; fall back to a generic label.
-    let playlist_name = playlist
-        .get_playlist_info(1, 0)
-        .await
-        .ok()
-        .and_then(|v| {
-            v.get("data")
-                .and_then(|d| d.get("playlistV2"))
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "Spotify Playlist".to_string());
-
-    let mut mapped = Vec::new();
-
-    for (i, track_json) in tracks_json.iter().enumerate() {
-        let data = match track_json.get("itemV2").and_then(|i| i.get("data")) {
-            Some(d) => d,
-            None => continue,
-        };
-
-        let name = data
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("Unknown Title");
-
-        let uri = data
-            .get("uri")
-            .and_then(|u| u.as_str())
-            .unwrap_or_default();
-
-        if uri.is_empty() {
-            continue;
-        }
-
-        let track_id = uri.split(':').last().unwrap_or_default();
-        let track_url = format!("https://open.spotify.com/track/{}", track_id);
-
-        let artists = data
-            .get("artists")
-            .and_then(|a| a.get("items"))
-            .and_then(|items| items.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|a| {
-                        a.get("profile")
-                            .and_then(|p| p.get("name"))
-                            .and_then(|n| n.as_str())
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_else(|| "Unknown Artist".to_string());
-
-        let cover_url = data
-            .get("albumOfTrack")
-            .and_then(|a| a.get("coverArt"))
-            .and_then(|c| c.get("sources"))
-            .and_then(|s| s.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|src| src.get("url"))
-            .and_then(|u| u.as_str())
-            .map(|s| s.to_string());
-
-        let duration_ms = data
-            .get("duration")
-            .and_then(|d| d.get("totalMilliseconds"))
-            .and_then(|m| m.as_u64())
-            .unwrap_or(0);
-
-        mapped.push(TrackMeta {
-            id: track_url,
-            title: name.to_string(),
-            artists: vec![artists],
-            album: String::new(),
-            duration_ms,
-            cover_url,
-            track_number: (i + 1) as u32,
-            folder_name: Some(playlist_name.clone()),
-            playlist_url: Some(url.to_string()),
-            ..Default::default()
-        });
-    }
-
-    if mapped.is_empty() {
-        return Err("Could not parse any tracks from the Spotify playlist.".to_string());
-    }
-
-    Ok(mapped)
-}
-
-async fn fetch_spotify_playlist_legacy(url: &str) -> Result<Vec<TrackMeta>, String> {
     let id = extract_spotify_id(url, "playlist")
         .or_else(|_| extract_spotify_id(url, "album"))?;
-    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
+
     let client = reqwest::Client::new();
+    let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+    // 1. Embed page → metadata + anon token (works, as before)
+    let embed_url = format!("https://open.spotify.com/embed/playlist/{}", id);
     let resp = client
         .get(&embed_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header("User-Agent", user_agent)
         .send()
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
+        .map_err(|e| format!("Embed request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Embed returned HTTP {}", resp.status()));
+    }
+    let html = resp.text().await.map_err(|e| format!("Embed read failed: {e}"))?;
 
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read page: {e}"))?;
+    let re = Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
+        .map_err(|e| format!("Regex: {e}"))?;
+    let caps = re.captures(&html).ok_or("No __NEXT_DATA__ in embed")?;
+    let json: serde_json::Value = serde_json::from_str(&caps[1])
+        .map_err(|e| format!("__NEXT_DATA__ parse: {e}"))?;
 
-    let script_re =
-        Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
-            .unwrap();
-    let script_match = script_re
-        .captures(&html)
-        .ok_or("Could not find track list data on the page.")?;
+    let playlist_name = json["props"]["pageProps"]["state"]["data"]["entity"]["name"]
+        .as_str().unwrap_or("Unknown Playlist").to_string();
+    let playlist_cover = json["props"]["pageProps"]["state"]["data"]["entity"]["coverArt"]["sources"]
+        .as_array().and_then(|a| a.first()).and_then(|s| s["url"].as_str()).map(String::from);
 
-    let json: serde_json::Value = serde_json::from_str(&script_match[1])
-        .map_err(|e| format!("Failed to parse JSON: {e}"))?;
+    let token = json["props"]["pageProps"]["state"]["settings"]["session"]["accessToken"]
+        .as_str().filter(|s| !s.is_empty())
+        .ok_or("No accessToken in __NEXT_DATA__")?.to_string();
 
-    let entity = &json["props"]["pageProps"]["state"]["data"]["entity"];
-    let playlist_name = entity["name"]
-        .as_str()
-        .unwrap_or("Unknown Playlist")
-        .to_string();
+    // 2. spclient playlist/v2 — anonymous token works here, api.spotify.com does not.
+    let mut all_tracks: Vec<TrackMeta> = Vec::new();
+    let mut offset: usize = 0;
+    let limit: usize = 100;
 
-    let track_list = entity["trackList"]
-        .as_array()
-        .ok_or("This playlist is empty or could not be parsed.")?;
+    loop {
+        let api_url = format!(
+            "https://spclient.wg.spotify.com/playlist/v2/playlist/{}?from={}&length={}",
+            id, offset, limit
+        );
+        let resp = client
+            .get(&api_url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", user_agent)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| format!("spclient request failed: {e}"))?;
 
-    let playlist_cover = entity["coverArt"]["sources"]
-        .as_array()
-        .and_then(|sources| sources.first())
-        .and_then(|src| src["url"].as_str())
-        .map(|s| s.to_string());
-
-    let mut mapped = Vec::new();
-    for (i, track) in track_list.iter().enumerate() {
-        let uri = track["uri"].as_str().unwrap_or_default();
-        if uri.is_empty() {
-            continue;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("spclient HTTP {} at offset {}: {}", status, offset, body));
         }
-        let track_id = uri.split(':').last().unwrap_or_default();
-        let track_url = format!("https://open.spotify.com/track/{}", track_id);
-        mapped.push(TrackMeta {
-            id: track_url,
-            title: track["title"]
-                .as_str()
-                .unwrap_or("Unknown Title")
-                .to_string(),
-            artists: vec![track["subtitle"]
-                .as_str()
-                .unwrap_or("Unknown Artist")
-                .to_string()],
-            duration_ms: track["duration"].as_u64().unwrap_or(0),
-            cover_url: playlist_cover.clone(),
-            track_number: (i + 1) as u32,
-            folder_name: Some(playlist_name.clone()),
-            playlist_url: Some(url.to_string()),
-            ..Default::default()
-        });
+
+        let page: serde_json::Value = resp.json().await
+            .map_err(|e| format!("spclient JSON parse: {e}"))?;
+
+        // spclient returns { "contents": { "items": [ { "uri": "spotify:track:..." }, ... ] } }
+        let items = page["contents"]["items"]
+            .as_array()
+            .or_else(|| page["items"].as_array())
+            .ok_or("spclient response missing contents.items")?;
+
+        let before = all_tracks.len();
+        for item in items {
+            let uri = item["uri"].as_str().unwrap_or("");
+            if !uri.starts_with("spotify:track:") {
+                continue;
+            }
+            let track_id = uri.rsplit(':').next().unwrap_or("");
+            all_tracks.push(TrackMeta {
+                id: format!("https://open.spotify.com/track/{}", track_id),
+                title: format!("Track {}", track_id), // spclient gives URI only
+                artists: vec![],
+                album: String::new(),
+                duration_ms: 0,
+                cover_url: playlist_cover.clone(),
+                track_number: (all_tracks.len() + 1) as u32,
+                folder_name: Some(playlist_name.clone()),
+                playlist_url: Some(url.to_string()),
+                ..Default::default()
+            });
+        }
+
+        let got = all_tracks.len() - before;
+        if got == 0 || items.len() < limit {
+            break;
+        }
+        offset += limit;
     }
 
-    if mapped.is_empty() {
-        return Err("The playlist has no tracks.".to_string());
+    if all_tracks.is_empty() {
+        return Err("Playlist returned zero tracks".into());
     }
-    Ok(mapped)
+    Ok(all_tracks)
 }
 
 // -------------------- YouTube Playlist (fast, skip webpage) --------------------
@@ -1122,4 +986,55 @@ pub async fn download_batch(
 async fn tag_file(app: &AppHandle, _path: &Path, _meta: &TrackMeta) -> Result<(), String> {
     let _ = app;
     Ok(())
+}
+
+// -------------------- Internal tests --------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spclient_diagnostic() {
+        let client = reqwest::Client::new();
+        for url in &[
+            "https://api.spotify.com/v1/playlists/7JbGYbGThZDPLfLK2nPX1c/tracks?offset=0&limit=1",
+            "https://spclient.wg.spotify.com/playlist/v2/playlist/7JbGYbGThZDPLfLK2nPX1c?from=0&length=1",
+        ] {
+            match client.get(*url).header("User-Agent", "Mozilla/5.0").send().await {
+                Ok(r) => println!("[DIAG] {} → HTTP {}", url, r.status()),
+                Err(e) => println!("[DIAG] {} → transport error: {}", url, e),
+            }
+        }
+    }
+
+
+    #[tokio::test]
+    async fn spotify_playlist_fetches_all_tracks() {
+        let url =
+            "https://open.spotify.com/playlist/7JbGYbGThZDPLfLK2nPX1c?si=A_n5O3enQ3aizFwc6M86Ng";
+        match fetch_spotify_playlist(url).await {
+            Ok(tracks) => {
+                println!("\n[TEST] Fetched {} tracks from playlist", tracks.len());
+                for (i, t) in tracks.iter().take(3).enumerate() {
+                    println!("[TEST]   #{}: {} - {}", i + 1, t.title, t.artists.join(", "));
+                }
+                println!("[TEST]   ...");
+                if let Some(last) = tracks.last() {
+                    println!(
+                        "[TEST]   #{}: {} - {}",
+                        tracks.len(),
+                        last.title,
+                        last.artists.join(", ")
+                    );
+                }
+                assert!(
+                    tracks.len() > 100,
+                    "Expected >100 tracks (full playlist), got {}. Pagination failed.",
+                    tracks.len()
+                );
+            }
+            Err(e) => panic!("fetch_spotify_playlist failed: {e}"),
+        }
+    }
 }
