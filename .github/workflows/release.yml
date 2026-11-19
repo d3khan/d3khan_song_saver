@@ -112,28 +112,4 @@ jobs:
         run: pyinstaller --onefile --name downloader downloader.py
 
       - name: Prepare sidecar (Windows)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          mkdir -p src-tauri/binaries
-          cp dist/downloader.exe src-tauri/binaries/downloader-x86_64-pc-windows-msvc.exe
-
-      - name: Prepare sidecar (Ubuntu)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          mkdir -p src-tauri/binaries
-          cp dist/downloader src-tauri/binaries/downloader-x86_64-unknown-linux-gnu
-
-      # ------------------------------------------------------------------
-      # Build & release
-      # ------------------------------------------------------------------
-
-      - name: Build and Release Tauri App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: 'd3khan song saver v__VERSION__'
-          releaseBody: 'See the assets below to download the Windows or Linux installer.'
-          releaseDraft: true
-          prerelease: false
+        shell: bash
