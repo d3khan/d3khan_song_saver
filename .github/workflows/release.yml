@@ -21,7 +21,7 @@ jobs:
 
       - name: Remove rust-toolchain.toml (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
-        run: rm rust-toolchain.toml
+        run: rm -f rust-toolchain.toml
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
