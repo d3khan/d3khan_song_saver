@@ -42,7 +42,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       # ------------------------------------------------------------------
-      # FFmpeg: Download into src-tauri/resources/ (Private Bundle)
+      # FFmpeg: Download and rename to avoid conflicts
       # ------------------------------------------------------------------
 
       - name: Download bundled FFmpeg (Windows)
@@ -50,34 +50,34 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $dir = "src-tauri/resources"
+          $dir = "src-tauri/binaries"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
           $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
           Invoke-WebRequest -Uri $url -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg" -Force
           $root = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Directory | Select-Object -First 1
-          Copy-Item "$($root.FullName)\bin\ffmpeg.exe" "$dir\ffmpeg.exe"
+          Copy-Item "$($root.FullName)\bin\ffmpeg.exe" "$dir\d3khan-ffmpeg-x86_64-pc-windows-msvc.exe"
 
       - name: Download bundled FFmpeg (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         run: |
           set -euo pipefail
-          dir="src-tauri/resources"
+          dir="src-tauri/binaries"
           mkdir -p "$dir"
           url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
           archive="$RUNNER_TEMP/ffmpeg.tar.xz"
           curl -fsSL "$url" -o "$archive"
           mkdir -p "$RUNNER_TEMP/ffmpeg"
           tar -xJf "$archive" -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
-          cp "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" "$dir/ffmpeg"
-          chmod +x "$dir/ffmpeg"
+          cp "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" "$dir/d3khan-ffmpeg-x86_64-unknown-linux-gnu"
+          chmod +x "$dir/d3khan-ffmpeg-x86_64-unknown-linux-gnu"
 
       - name: Verify bundled binaries
         shell: bash
         run: |
-          ls -la src-tauri/resources/ || true
+          echo "=== Binaries directory ==="
           ls -la src-tauri/binaries/ || true
 
       # ------------------------------------------------------------------

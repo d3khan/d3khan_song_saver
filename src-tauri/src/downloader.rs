@@ -76,20 +76,19 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
 }
 
 fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
-    // 1. Check Tauri's private resources directory (bundled privately, no system conflicts)
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let ffmpeg_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        let private_ffmpeg = resource_dir.join(ffmpeg_name);
-        if private_ffmpeg.exists() {
-            return Some(private_ffmpeg);
-        }
+    // 1. Check for the bundled private version (renamed to avoid conflicts)
+    if let Some(p) = find_bundled_binary("d3khan-ffmpeg") {
+        eprintln!("[FFmpeg] Found bundled: {}", p.display());
+        return Some(p);
     }
     
     // 2. Fallback: Check if the user has it installed on their system PATH
     if let Ok(p) = which::which("ffmpeg") {
+        eprintln!("[FFmpeg] Found system: {}", p.display());
         return Some(p);
     }
     
+    eprintln!("[FFmpeg] Not found anywhere!");
     None
 }
 
@@ -321,7 +320,10 @@ pub async fn download_batch(
 ) -> Result<(), String> {
     let total = tracks.len();
     let is_video = media_mode == "video";
-    let ffmpeg_path = find_ffmpeg(app).ok_or_else(|| "FFmpeg not found.".to_string())?;
+    let ffmpeg_path = find_ffmpeg(app).ok_or_else(|| {
+            eprintln!("[FFmpeg] Error: FFmpeg not found. Please install FFmpeg or ensure it's bundled.");
+            "FFmpeg not found. Please install FFmpeg system-wide or ensure the app is properly installed.".to_string()
+        })?;
     let ffmpeg_str = ffmpeg_path.to_string_lossy().to_string();
 
     let mut current_folder_state: Option<(PathBuf, PlaylistState)> = None;
