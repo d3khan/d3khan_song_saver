@@ -76,19 +76,12 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
 }
 
 fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
-    // 1. Check for the bundled private version (renamed to avoid conflicts)
     if let Some(p) = find_bundled_binary("d3khan-ffmpeg") {
-        eprintln!("[FFmpeg] Found bundled: {}", p.display());
         return Some(p);
     }
-    
-    // 2. Fallback: Check if the user has it installed on their system PATH
     if let Ok(p) = which::which("ffmpeg") {
-        eprintln!("[FFmpeg] Found system: {}", p.display());
         return Some(p);
     }
-    
-    eprintln!("[FFmpeg] Not found anywhere!");
     None
 }
 
@@ -96,11 +89,8 @@ fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
 
 pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
     let target = format!("ytsearch{}:{}", limit, query.trim());
-
     let output = std::process::Command::new("yt-dlp")
-        .args([
-            &target, "--flat-playlist", "--dump-json", "--no-warnings", "--no-playlist", "--extractor-retries", "1",
-        ])
+        .args([&target, "--flat-playlist", "--dump-json", "--no-warnings", "--no-playlist", "--extractor-retries", "1"])
         .output()
         .map_err(|e| format!("yt-dlp search failed to start: {e}"))?;
 
@@ -131,14 +121,16 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, S
 
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
     let trimmed = input.trim();
+    let is_yt_domain = trimmed.contains("youtube.com") || trimmed.contains("music.youtube.com") || trimmed.contains("youtu.be");
+
     if trimmed.contains("open.spotify.com/track/") { return fetch_spotify_track(trimmed).await; }
     if trimmed.contains("open.spotify.com/playlist/") || trimmed.contains("open.spotify.com/album/") {
         return fetch_spotify_playlist(trimmed, app).await;
     }
-    if (trimmed.contains("youtube.com") || trimmed.contains("youtu.be")) && trimmed.contains("list=") {
+    if is_yt_domain && trimmed.contains("list=") {
         return fetch_youtube_playlist(trimmed).await;
     }
-    if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
+    if is_yt_domain {
         return fetch_youtube_track(trimmed).await;
     }
 
@@ -175,7 +167,6 @@ async fn fetch_spotify_playlist(url: &str, app: &AppHandle) -> Result<Vec<TrackM
 
     let tracks_array = parsed["tracks"].as_array().ok_or("Sidecar response missing tracks")?;
     let mut mapped = Vec::new();
-    
     for (i, t) in tracks_array.iter().enumerate() {
         mapped.push(TrackMeta {
             id: t["id"].as_str().unwrap_or("").to_string(),
@@ -214,7 +205,6 @@ async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
             }
             let video_id = json["id"].as_str().unwrap_or_default();
             if video_id.is_empty() { continue; }
-            
             track_number += 1;
             mapped.push(TrackMeta {
                 id: format!("https://www.youtube.com/watch?v={}", video_id),
@@ -240,7 +230,7 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
     let resp = client.get(&format!("https://www.youtube.com/oembed?url={}&format=json", encoded))
         .header("User-Agent", "Mozilla/5.0").send().await.map_err(|e| format!("Network error: {e}"))?;
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
-    
+
     Ok(vec![TrackMeta {
         id: youtube_url.to_string(),
         title: json["title"].as_str().unwrap_or("YouTube Video").to_string(),
@@ -320,17 +310,16 @@ pub async fn download_batch(
 ) -> Result<(), String> {
     let total = tracks.len();
     let is_video = media_mode == "video";
-    let ffmpeg_path = find_ffmpeg(app).ok_or_else(|| {
-            eprintln!("[FFmpeg] Error: FFmpeg not found. Please install FFmpeg or ensure it's bundled.");
-            "FFmpeg not found. Please install FFmpeg system-wide or ensure the app is properly installed.".to_string()
-        })?;
+    let ffmpeg_path = find_ffmpeg(app).ok_or_else(|| "FFmpeg not found.".to_string())?;
     let ffmpeg_str = ffmpeg_path.to_string_lossy().to_string();
 
     let mut current_folder_state: Option<(PathBuf, PlaylistState)> = None;
     let mut last_state_path = PathBuf::new();
 
     for (i, meta) in tracks.iter().enumerate() {
-        let is_youtube = meta.id.starts_with("http") && (meta.id.contains("youtube.com") || meta.id.contains("youtu.be"));
+        let is_youtube = meta.id.starts_with("http")
+            && (meta.id.contains("youtube.com") || meta.id.contains("music.youtube.com") || meta.id.contains("youtu.be"));
+
         let query = if is_youtube { meta.id.clone() } else { format!("{} {}", meta.title, meta.artists.join(", ")) };
 
         let mut audio_dir = output_dir.to_path_buf();
@@ -376,24 +365,17 @@ pub async fn download_batch(
                 audio_dir.join(&file_stem),
                 audio_dir.join("videos").join(&file_stem),
             ];
-
             let mut converted = false;
             for base in &candidate_video_bases {
                 for ext in &["mp4", "webm", "mkv"] {
                     let video_path = base.with_extension(ext);
                     if !video_path.exists() { continue; }
-                    
                     let audio_path = audio_base.with_extension("mp3");
-                    if audio_path.exists() && !overwrite_mode {
-                        converted = true;
-                        break;
-                    }
-                    
+                    if audio_path.exists() && !overwrite_mode { converted = true; break; }
                     let _ = app.emit("download-progress", json!({
                         "percent": (i as f64 / total as f64) * 100.0,
                         "status": format!("Converting existing video to MP3: {}", meta.title)
                     }));
-                    
                     match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path).await {
                         Ok(()) => {
                             let key = sync_key(meta, "audio");
@@ -416,7 +398,7 @@ pub async fn download_batch(
                 }
                 if converted { break; }
             }
-            if converted { continue; } // Skip normal download if conversion succeeded
+            if converted { continue; }
         }
 
         // --- NORMAL DOWNLOAD PROCESS ---
@@ -428,7 +410,6 @@ pub async fn download_batch(
                 let _ = app.emit("download-progress", json!({"percent": ((i as f64 + 1.0) / total as f64) * 100.0, "status": format!("Skipped: {}", meta.title)}));
                 continue;
             }
-
             if let Some(existing) = possible_exts.iter().map(|e| out_base.with_extension(e)).find(|p| p.exists()) {
                 state.downloaded_tracks.insert(key.clone());
                 state.manifest.insert(key, existing.to_string_lossy().to_string());
@@ -449,7 +430,7 @@ pub async fn download_batch(
 
         let mut success = false;
         let mut attempts = 0u32;
-        let mut final_downloaded_path: Option<PathBuf> = None; // <-- FIX: Declared OUTSIDE the loop
+        let mut final_downloaded_path: Option<PathBuf> = None;
         const MAX_ATTEMPTS: u32 = 3;
         let mut error_emitted = false;
         let mut bot_check_paused_once = false;
@@ -569,7 +550,7 @@ pub async fn download_batch(
                         eprintln!("Failed to finalize {}: {}", meta.title, e);
                     }
                     success = true;
-                    final_downloaded_path = Some(path); // <-- FIX: Save to outer variable
+                    final_downloaded_path = Some(path);
                 } else {
                     attempts += 1;
                 }
@@ -581,7 +562,7 @@ pub async fn download_batch(
         if success {
             let key = sync_key(meta, media_mode);
             state.downloaded_tracks.insert(key.clone());
-            if let Some(ref path) = final_downloaded_path { // <-- FIX: Use outer variable safely
+            if let Some(ref path) = final_downloaded_path {
                 state.manifest.insert(key, path.to_string_lossy().to_string());
             }
             let _ = std::fs::write(&state_path, serde_json::to_string_pretty(state).unwrap());
@@ -601,13 +582,11 @@ pub async fn download_batch(
         if let Some((_, state)) = current_folder_state.as_ref() {
             let current_ids: HashSet<String> = tracks.iter().map(|m| sync_key(m, media_mode)).collect();
             let mut orphaned_files = Vec::new();
-
             for (id, path_str) in &state.manifest {
                 if !current_ids.contains(id) && std::path::Path::new(path_str).exists() {
                     orphaned_files.push(path_str.clone());
                 }
             }
-
             if !orphaned_files.is_empty() {
                 let _ = app.emit("sync-deletion-prompt", json!({
                     "files": orphaned_files,

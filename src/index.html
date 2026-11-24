@@ -63,7 +63,8 @@
                 style="flex: 1;" />
               <button type="button" id="find-btn" class="btn secondary" style="padding: 0 20px;">Find</button>
             </div>
-            <p class="field-note" id="url-note">Paste a Spotify/YouTube link, or type a song name to find matches.</p>
+            <p class="field-note" id="url-note">Paste a Spotify/YouTube/YouTube Music link, or type a song name to find
+              matches.</p>
             <div id="search-results" class="search-results" hidden></div>
           </div>
 
@@ -72,7 +73,10 @@
             <textarea id="urls-input" class="text-area" rows="5" spellcheck="false"
               placeholder="https://open.spotify.com/…&#10;https://youtube.com/…"
               aria-describedby="urls-note"></textarea>
-            <p class="field-note" id="urls-note">Split on newlines or spaces · duplicates removed automatically.</p>
+            <p class="field-note" id="urls-note">Split on newlines · duplicates removed automatically.</p>
+            <p class="field-note" id="bulk-note" style="color:#e0a458; font-weight:600; margin-top:8px;">
+              ⚠ Sync is not supported in bulk link mode.
+            </p>
           </div>
         </div>
 
@@ -85,7 +89,7 @@
               <span class="mode-desc">Fetch new files and save playlist state for a later sync — no comparisons or
                 deletions.</span>
             </label>
-            <label class="mode-card is-selected" for="mode-sync">
+            <label class="mode-card is-selected" id="mode-sync-card" for="mode-sync">
               <input type="radio" name="job-mode" id="mode-sync" value="sync" class="sr-only" checked />
               <span class="mode-name">Sync <span class="mode-flag">recommended</span></span>
               <span class="mode-desc">Update a playlist folder — skip existing files, review removals.</span>
@@ -170,6 +174,7 @@
       </div>
     </div>
   </div>
+
   <!-- Sync Deletion Prompt Modal -->
   <div id="sync-delete-modal" role="dialog" aria-modal="true"
     style="position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); padding: 24px;">
@@ -186,6 +191,7 @@
       </div>
     </div>
   </div>
+
   <script src="./app.js"></script>
 </body>
 
