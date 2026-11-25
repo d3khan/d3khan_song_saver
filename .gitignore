@@ -37,3 +37,8 @@ dist_out/
 venv/
 
 src-tauri/binaries/
+__pycache__/
+test/
+test.py
+downloader.spec
+spotify_meta.spec

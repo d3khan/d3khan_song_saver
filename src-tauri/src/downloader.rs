@@ -75,7 +75,7 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
+fn find_ffmpeg(_app: &AppHandle) -> Option<PathBuf> {
     if let Some(p) = find_bundled_binary("d3khan-ffmpeg") {
         return Some(p);
     }

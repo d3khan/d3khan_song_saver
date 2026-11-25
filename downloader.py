@@ -1,6 +1,8 @@
 import sys
 import os
 import json
+import tempfile
+import shutil
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -58,7 +60,7 @@ def resolve_target(search_query: str, song: str, artist: str, media_mode: str) -
     """
     q = search_query.strip()
     is_url = q.startswith("http")
-    is_yt = is_url and ("youtube.com" in q or "youtu.be" in q)
+    is_yt = is_url and ("youtube.com" in q or "youtu.be" in q or "music.youtube.com" in q)
 
     if is_yt:
         return q, True
@@ -149,11 +151,21 @@ def download_track(
     if not is_direct_url:
         ydl_opts["default_search"] = "ytsearch1"
 
+    # FIX: yt-dlp strictly requires the binary to be named 'ffmpeg' or 'ffmpeg.exe'.
+    # We copy our bundled binary to a temp folder with the correct name.
     if ffmpeg_path and os.path.exists(ffmpeg_path):
-        if os.path.isfile(ffmpeg_path):
-            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
-        else:
-            ydl_opts["ffmpeg_location"] = ffmpeg_path
+        temp_dir = tempfile.mkdtemp()
+        target_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+        dest_path = os.path.join(temp_dir, target_name)
+        
+        try:
+            shutil.copy2(ffmpeg_path, dest_path)
+            os.chmod(dest_path, 0o755)  # Ensure it's executable
+            ydl_opts["ffmpeg_location"] = temp_dir
+        except Exception as e:
+            print(f"Warning: Could not prepare bundled ffmpeg: {e}", file=sys.stderr)
+            # Fallback to system PATH if copy fails
+            pass
 
     final_file = None
     try:
