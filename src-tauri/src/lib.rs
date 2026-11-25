@@ -23,19 +23,31 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // --- EXPIRY GUARD (Jan 1, 2027) ---
-            const EXPIRY_UNIX: u64 = 1_798_761_600; 
+            const EXPIRY_UNIX: u64 = 1_798_761_600;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
             if now >= EXPIRY_UNIX {
-                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                app.dialog()
-                    .message("This version of d3khan song saver has expired.\n\nPlease download the latest release with new features and improvements!")
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
+                
+                let should_update = app.dialog()
+                    .message("This version of d3khan song saver has expired.\n\nClick 'Update' to go to the latest release.")
                     .title("Version Expired")
                     .kind(MessageDialogKind::Error)
+                    .buttons(MessageDialogButtons::OkCancelCustom("Update".into(), "Exit".into()))
                     .blocking_show();
+                
+                if should_update {
+                    let url = "https://github.com/d3khan/d3khan_song_saver/releases";
+                    #[cfg(target_os = "windows")]
+                    let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg(url).spawn();
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                }
                 std::process::exit(0);
             }
             // --- END EXPIRY GUARD ---
@@ -84,7 +96,7 @@ pub fn run() {
             commands::pick_folder,
             commands::get_settings,
             commands::save_settings,
-            commands::delete_orphaned_files, // <-- NEW COMMAND REGISTERED HERE
+            commands::delete_orphaned_files,
             batch::resume_batch,
         ])
         .run(tauri::generate_context!())

@@ -56,7 +56,8 @@ def resolve_target(search_query: str, song: str, artist: str, media_mode: str) -
     Returns (target, is_direct_url).
     - YouTube / YouTube Music links -> pass through directly.
     - Audio + non-YouTube -> try ytmusicapi for an official track.
-    - Video + non-YouTube -> append 'official video' for a ytsearch.
+    - Video + non-YouTube -> ALWAYS append 'official video'.
+    - Fallback Audio -> ALWAYS append 'official audio'.
     """
     q = search_query.strip()
     is_url = q.startswith("http")
@@ -69,6 +70,7 @@ def resolve_target(search_query: str, song: str, artist: str, media_mode: str) -
     human_query = f"{artist} {song}".strip() if (artist or song) else q
 
     if media_mode == "video":
+        # ALWAYS append "official video" for video mode
         return f"{human_query} official video", False
 
     # Audio mode: prefer YouTube Music official track
@@ -76,8 +78,8 @@ def resolve_target(search_query: str, song: str, artist: str, media_mode: str) -
     if vid:
         return f"https://music.youtube.com/watch?v={vid}", True
 
-    # Fallback to a plain audio search
-    return f"{human_query} audio", False
+    # ALWAYS append "official audio" to the fallback search to ensure accuracy
+    return f"{human_query} official audio", False
 
 
 def download_track(
@@ -164,7 +166,6 @@ def download_track(
             ydl_opts["ffmpeg_location"] = temp_dir
         except Exception as e:
             print(f"Warning: Could not prepare bundled ffmpeg: {e}", file=sys.stderr)
-            # Fallback to system PATH if copy fails
             pass
 
     final_file = None

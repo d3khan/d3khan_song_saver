@@ -62,11 +62,9 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
     let triple = env!("TAURI_ENV_TARGET_TRIPLE");
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
-
     let direct_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let direct = exe_dir.join(&direct_name);
     if direct.exists() { return Some(direct); }
-
     let suffixed_name = if cfg!(windows) { format!("{name}-{triple}.exe") } else { format!("{name}-{triple}") };
     for ancestor in exe_dir.ancestors() {
         let candidate = ancestor.join("binaries").join(&suffixed_name);
@@ -76,19 +74,17 @@ fn find_bundled_binary(name: &str) -> Option<PathBuf> {
 }
 
 fn find_ffmpeg(_app: &AppHandle) -> Option<PathBuf> {
-    if let Some(p) = find_bundled_binary("d3khan-ffmpeg") {
-        return Some(p);
-    }
-    if let Ok(p) = which::which("ffmpeg") {
-        return Some(p);
-    }
+    if let Some(p) = find_bundled_binary("d3khan-ffmpeg") { return Some(p); }
+    if let Ok(p) = which::which("ffmpeg") { return Some(p); }
     None
 }
 
 // -------------------- Fast YouTube search --------------------
 
 pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
-    let target = format!("ytsearch{}:{}", limit, query.trim());
+    // ALWAYS append "official audio" to UI searches to ensure high-quality results
+    let target = format!("ytsearch{}:{} official audio", limit, query.trim());
+    
     let output = std::process::Command::new("yt-dlp")
         .args([&target, "--flat-playlist", "--dump-json", "--no-warnings", "--no-playlist", "--extractor-retries", "1"])
         .output()
@@ -122,7 +118,7 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, S
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
     let trimmed = input.trim();
     let is_yt_domain = trimmed.contains("youtube.com") || trimmed.contains("music.youtube.com") || trimmed.contains("youtu.be");
-
+    
     if trimmed.contains("open.spotify.com/track/") { return fetch_spotify_track(trimmed).await; }
     if trimmed.contains("open.spotify.com/playlist/") || trimmed.contains("open.spotify.com/album/") {
         return fetch_spotify_playlist(trimmed, app).await;
@@ -137,8 +133,8 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
     let cache_key = trimmed.to_lowercase();
     let mut cache = load_cache(app);
     if let Some(cached_results) = cache.get(&cache_key) { return Ok(cached_results.clone()); }
-
-    let results = search_youtube(trimmed, 10).await?;
+    
+    let results = search_youtube(trimmed, 20).await?;
     if !results.is_empty() {
         cache.insert(cache_key, results.clone());
         save_cache(app, &cache);
@@ -230,7 +226,7 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
     let resp = client.get(&format!("https://www.youtube.com/oembed?url={}&format=json", encoded))
         .header("User-Agent", "Mozilla/5.0").send().await.map_err(|e| format!("Network error: {e}"))?;
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
-
+    
     Ok(vec![TrackMeta {
         id: youtube_url.to_string(),
         title: json["title"].as_str().unwrap_or("YouTube Video").to_string(),
@@ -319,7 +315,6 @@ pub async fn download_batch(
     for (i, meta) in tracks.iter().enumerate() {
         let is_youtube = meta.id.starts_with("http")
             && (meta.id.contains("youtube.com") || meta.id.contains("music.youtube.com") || meta.id.contains("youtu.be"));
-
         let query = if is_youtube { meta.id.clone() } else { format!("{} {}", meta.title, meta.artists.join(", ")) };
 
         let mut audio_dir = output_dir.to_path_buf();
@@ -359,23 +354,27 @@ pub async fn download_batch(
         let out_base = target_dir.join(&file_stem);
         let audio_base = audio_dir.join(&file_stem);
 
-        // --- AUDIO MODE: Check for existing video and convert first ---
-        if !is_video {
+        // --- AUDIO MODE: Check for existing video and convert first (ONLY for YouTube links) ---
+        if !is_video && is_youtube {
             let candidate_video_bases = vec![
                 audio_dir.join(&file_stem),
                 audio_dir.join("videos").join(&file_stem),
             ];
+
             let mut converted = false;
             for base in &candidate_video_bases {
                 for ext in &["mp4", "webm", "mkv"] {
                     let video_path = base.with_extension(ext);
                     if !video_path.exists() { continue; }
+                    
                     let audio_path = audio_base.with_extension("mp3");
                     if audio_path.exists() && !overwrite_mode { converted = true; break; }
+                    
                     let _ = app.emit("download-progress", json!({
                         "percent": (i as f64 / total as f64) * 100.0,
                         "status": format!("Converting existing video to MP3: {}", meta.title)
                     }));
+                    
                     match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path).await {
                         Ok(()) => {
                             let key = sync_key(meta, "audio");
@@ -410,6 +409,7 @@ pub async fn download_batch(
                 let _ = app.emit("download-progress", json!({"percent": ((i as f64 + 1.0) / total as f64) * 100.0, "status": format!("Skipped: {}", meta.title)}));
                 continue;
             }
+
             if let Some(existing) = possible_exts.iter().map(|e| out_base.with_extension(e)).find(|p| p.exists()) {
                 state.downloaded_tracks.insert(key.clone());
                 state.manifest.insert(key, existing.to_string_lossy().to_string());
@@ -582,11 +582,13 @@ pub async fn download_batch(
         if let Some((_, state)) = current_folder_state.as_ref() {
             let current_ids: HashSet<String> = tracks.iter().map(|m| sync_key(m, media_mode)).collect();
             let mut orphaned_files = Vec::new();
+
             for (id, path_str) in &state.manifest {
                 if !current_ids.contains(id) && std::path::Path::new(path_str).exists() {
                     orphaned_files.push(path_str.clone());
                 }
             }
+
             if !orphaned_files.is_empty() {
                 let _ = app.emit("sync-deletion-prompt", json!({
                     "files": orphaned_files,
