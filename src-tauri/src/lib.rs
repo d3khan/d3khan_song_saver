@@ -31,14 +31,12 @@ pub fn run() {
 
             if now >= EXPIRY_UNIX {
                 use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
-                
                 let should_update = app.dialog()
                     .message("This version of d3khan song saver has expired.\n\nClick 'Update' to go to the latest release.")
                     .title("Version Expired")
                     .kind(MessageDialogKind::Error)
                     .buttons(MessageDialogButtons::OkCancelCustom("Update".into(), "Exit".into()))
                     .blocking_show();
-                
                 if should_update {
                     let url = "https://github.com/d3khan/d3khan_song_saver/releases";
                     #[cfg(target_os = "windows")]

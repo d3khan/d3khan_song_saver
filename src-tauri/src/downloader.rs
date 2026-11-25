@@ -285,11 +285,76 @@ fn sync_key(meta: &TrackMeta, media_mode: &str) -> String {
 
 // -------------------- Audio-from-existing-video conversion --------------------
 
-async fn convert_existing_video_to_audio(video_path: &Path, audio_path: &Path, ffmpeg: &Path) -> Result<(), String> {
+async fn convert_existing_video_to_audio(
+    video_path: &Path,
+    audio_path: &Path,
+    ffmpeg: &Path,
+    cover_url: Option<&str>,
+    title: &str,
+    artist: &str,
+) -> Result<(), String> {
+    let cover_path: Option<PathBuf> = match cover_url {
+        Some(url) => {
+            let tmp = std::env::temp_dir().join(format!("d3khan_cover_{}.jpg", std::process::id()));
+            match reqwest::Client::new().get(url).send().await {
+                Ok(resp) => match resp.bytes().await {
+                    Ok(bytes) => {
+                        if std::fs::write(&tmp, &bytes).is_ok() { Some(tmp) } else { None }
+                    }
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            }
+        }
+        None => None,
+    };
+
+    let mut args: Vec<String> = vec!["-i".to_string(), video_path.to_string_lossy().to_string()];
+    if let Some(c) = &cover_path {
+        args.push("-i".to_string());
+        args.push(c.to_string_lossy().to_string());
+        args.push("-map".to_string()); args.push("0:a:0".to_string());
+        args.push("-map".to_string()); args.push("1:v:0".to_string());
+        args.push("-c:v".to_string()); args.push("mjpeg".to_string());
+        args.push("-disposition:v".to_string()); args.push("attached_pic".to_string());
+        args.push("-id3v2_version".to_string()); args.push("3".to_string());
+    } else {
+        args.push("-vn".to_string());
+    }
+    args.push("-acodec".to_string()); args.push("libmp3lame".to_string());
+    args.push("-q:a".to_string()); args.push("2".to_string());
+    args.push("-metadata".to_string()); args.push(format!("title={}", title));
+    args.push("-metadata".to_string()); args.push(format!("artist={}", artist));
+    args.push("-y".to_string());
+    args.push(audio_path.to_string_lossy().to_string());
+
     let output = tokio::process::Command::new(ffmpeg)
-        .args(["-i", video_path.to_str().unwrap_or_default(), "-vn", "-acodec", "libmp3lame", "-q:a", "2", "-y", audio_path.to_str().unwrap_or_default()])
-        .output().await.map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
-    if !output.status.success() {
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
+
+    let ok = if output.status.success() {
+        true
+    } else if cover_path.is_some() {
+        let fallback = tokio::process::Command::new(ffmpeg)
+            .args([
+                "-i", video_path.to_str().unwrap_or_default(),
+                "-vn", "-acodec", "libmp3lame", "-q:a", "2",
+                "-metadata", &format!("title={}", title),
+                "-metadata", &format!("artist={}", artist),
+                "-y", audio_path.to_str().unwrap_or_default(),
+            ])
+            .output()
+            .await
+            .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
+        fallback.status.success()
+    } else {
+        false
+    };
+
+    if let Some(c) = &cover_path { let _ = std::fs::remove_file(c); }
+    if !ok {
         return Err(format!("ffmpeg conversion failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
     Ok(())
@@ -375,7 +440,7 @@ pub async fn download_batch(
                         "status": format!("Converting existing video to MP3: {}", meta.title)
                     }));
                     
-                    match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path).await {
+                    match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path, meta.cover_url.as_deref(), &meta.title, &meta.artists.join(", ")).await {
                         Ok(()) => {
                             let key = sync_key(meta, "audio");
                             state.downloaded_tracks.insert(key.clone());
