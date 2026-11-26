@@ -8,6 +8,7 @@ use tauri_plugin_dialog::DialogExt;
 // -------------------- Settings --------------------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default = "default_source")]
     pub source: String,
@@ -22,6 +23,7 @@ pub struct Settings {
 fn default_source() -> String {
     "none".into()
 }
+
 fn default_media_mode() -> String {
     "audio".into()
 }
@@ -75,6 +77,7 @@ pub async fn save_settings(app: AppHandle, settings: Settings) -> Result<Setting
 // -------------------- Track result DTO --------------------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct TrackResult {
     pub id: String,
     pub title: String,
@@ -139,10 +142,11 @@ pub async fn resolve_bulk_input(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn search_youtube(
+    app: AppHandle,
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<TrackResult>, String> {
-    let metas = crate::downloader::search_youtube(&query, limit.unwrap_or(10)).await?;
+    let metas = crate::downloader::search_youtube(&app, &query, limit.unwrap_or(10)).await?;
     Ok(metas
         .into_iter()
         .map(|t| TrackResult {
@@ -176,18 +180,15 @@ pub async fn download_track(
     app: AppHandle,
     tracks: Vec<TrackResult>,
     output_dir: String,
-    mode: Option<String>,          // "download" | "sync"  → overwrite behaviour
-    media_mode: Option<String>,    // "audio" | "video"    → media type
+    mode: Option<String>,       // "download" | "sync"  → overwrite behaviour
+    media_mode: Option<String>, // "audio" | "video"    → media type
 ) -> Result<(), String> {
     let out_path = PathBuf::from(&output_dir);
 
     // Existing contract: "download" means overwrite; anything else is sync.
     let overwrite = mode.as_deref() == Some("download");
 
-    let media = media_mode
-        .as_deref()
-        .unwrap_or("audio")
-        .to_lowercase();
+    let media = media_mode.as_deref().unwrap_or("audio").to_lowercase();
     let media = if media == "video" { "video" } else { "audio" };
 
     let metas: Vec<TrackMeta> = tracks

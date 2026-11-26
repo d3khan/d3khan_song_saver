@@ -79,36 +79,36 @@ fn find_ffmpeg(_app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-// -------------------- Fast YouTube search --------------------
+// -------------------- Fast YouTube search (frozen sidecar — NO yt-dlp binary) --------------------
 
-pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
-    // ALWAYS append "official audio" to UI searches to ensure high-quality results
-    let target = format!("ytsearch{}:{} official audio", limit, query.trim());
-    
-    let output = std::process::Command::new("yt-dlp")
-        .args([&target, "--flat-playlist", "--dump-json", "--no-warnings", "--no-playlist", "--extractor-retries", "1"])
-        .output()
-        .map_err(|e| format!("yt-dlp search failed to start: {e}"))?;
+pub async fn search_youtube(app: &AppHandle, query: &str, limit: u32) -> Result<Vec<TrackMeta>, String> {
+    let limit_str = limit.to_string();
+    let sidecar = app.shell().sidecar("downloader").map_err(|e| format!("Sidecar error: {e}"))?;
+    let output = sidecar
+        .args(["--search", query, limit_str.as_str()])
+        .output().await
+        .map_err(|e| format!("Search sidecar failed: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("yt-dlp search failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!("Search sidecar failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
-
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_str = stdout.lines().rev().find(|l| l.trim().starts_with('{')).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| format!("Parse error: {e}"))?;
+    if parsed["status"] == "error" {
+        return Err(parsed["message"].as_str().unwrap_or("search failed").to_string());
+    }
+    let arr = parsed["tracks"].as_array().ok_or("Search returned no tracks")?;
     let mut results = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.trim().is_empty() { continue; }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
-            if id.is_empty() { continue; }
-            results.push(TrackMeta {
-                id: format!("https://www.youtube.com/watch?v={}", id),
-                title: v.get("title").and_then(|x| x.as_str()).unwrap_or("Unknown Title").to_string(),
-                artists: vec![v.get("uploader").and_then(|x| x.as_str()).or_else(|| v.get("channel").and_then(|x| x.as_str())).unwrap_or("YouTube").to_string()],
-                cover_url: Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", id)),
-                duration_ms: v.get("duration").and_then(|d| d.as_f64()).map(|s| (s * 1000.0) as u64).unwrap_or(0),
-                ..Default::default()
-            });
-        }
+    for t in arr {
+        results.push(TrackMeta {
+            id: t["id"].as_str().unwrap_or("").to_string(),
+            title: t["title"].as_str().unwrap_or("Unknown Title").to_string(),
+            artists: t["artists"].as_array().unwrap_or(&vec![]).iter().filter_map(|a| a.as_str().map(String::from)).collect(),
+            cover_url: t["cover_url"].as_str().map(String::from),
+            duration_ms: t["duration_ms"].as_u64().unwrap_or(0),
+            ..Default::default()
+        });
     }
     Ok(results)
 }
@@ -118,13 +118,13 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<TrackMeta>, S
 pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta>, String> {
     let trimmed = input.trim();
     let is_yt_domain = trimmed.contains("youtube.com") || trimmed.contains("music.youtube.com") || trimmed.contains("youtu.be");
-    
+
     if trimmed.contains("open.spotify.com/track/") { return fetch_spotify_track(trimmed).await; }
     if trimmed.contains("open.spotify.com/playlist/") || trimmed.contains("open.spotify.com/album/") {
         return fetch_spotify_playlist(trimmed, app).await;
     }
     if is_yt_domain && trimmed.contains("list=") {
-        return fetch_youtube_playlist(trimmed).await;
+        return fetch_youtube_playlist(trimmed, app).await;
     }
     if is_yt_domain {
         return fetch_youtube_track(trimmed).await;
@@ -133,8 +133,8 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
     let cache_key = trimmed.to_lowercase();
     let mut cache = load_cache(app);
     if let Some(cached_results) = cache.get(&cache_key) { return Ok(cached_results.clone()); }
-    
-    let results = search_youtube(trimmed, 20).await?;
+
+    let results = search_youtube(app, trimmed, 10).await?;
     if !results.is_empty() {
         cache.insert(cache_key, results.clone());
         save_cache(app, &cache);
@@ -180,39 +180,39 @@ async fn fetch_spotify_playlist(url: &str, app: &AppHandle) -> Result<Vec<TrackM
     Ok(mapped)
 }
 
-// -------------------- YouTube Playlist --------------------
+// -------------------- YouTube Playlist (frozen sidecar — NO yt-dlp binary) --------------------
 
-async fn fetch_youtube_playlist(url: &str) -> Result<Vec<TrackMeta>, String> {
-    let output = std::process::Command::new("yt-dlp")
-        .args(["--flat-playlist", "--dump-json", "--yes-playlist", "--ignore-errors", "--extractor-args", "youtubetab:skip=webpage", "--extractor-retries", "1", "--socket-timeout", "15", url])
-        .output().map_err(|e| format!("yt-dlp failed: {e}"))?;
+async fn fetch_youtube_playlist(url: &str, app: &AppHandle) -> Result<Vec<TrackMeta>, String> {
+    let sidecar = app.shell().sidecar("downloader").map_err(|e| format!("Sidecar error: {e}"))?;
+    let output = sidecar
+        .args(["--playlist", url])
+        .output().await
+        .map_err(|e| format!("Playlist sidecar failed: {e}"))?;
 
-    if !output.status.success() { return Err("yt-dlp failed to fetch YouTube playlist.".to_string()); }
-
+    if !output.status.success() {
+        return Err(format!("Playlist sidecar failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_str = stdout.lines().rev().find(|l| l.trim().starts_with('{')).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| format!("Parse error: {e}"))?;
+    if parsed["status"] == "error" {
+        return Err(parsed["message"].as_str().unwrap_or("playlist failed").to_string());
+    }
+    let name = parsed["playlist_name"].as_str().unwrap_or("YouTube Playlist").to_string();
+    let arr = parsed["tracks"].as_array().ok_or("Playlist returned no tracks")?;
     let mut mapped = Vec::new();
-    let mut playlist_name = "YouTube Playlist".to_string();
-    let mut track_number = 0u32;
-
-    for line in stdout.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            if track_number == 0 {
-                if let Some(p_name) = json["playlist_title"].as_str() { playlist_name = p_name.to_string(); }
-            }
-            let video_id = json["id"].as_str().unwrap_or_default();
-            if video_id.is_empty() { continue; }
-            track_number += 1;
-            mapped.push(TrackMeta {
-                id: format!("https://www.youtube.com/watch?v={}", video_id),
-                title: json["title"].as_str().unwrap_or("Unknown Title").to_string(),
-                artists: vec![json["uploader"].as_str().or_else(|| json["channel"].as_str()).unwrap_or("YouTube").to_string()],
-                cover_url: Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", video_id)),
-                track_number,
-                folder_name: Some(playlist_name.clone()),
-                playlist_url: Some(url.to_string()),
-                ..Default::default()
-            });
-        }
+    for (i, t) in arr.iter().enumerate() {
+        mapped.push(TrackMeta {
+            id: t["id"].as_str().unwrap_or("").to_string(),
+            title: t["title"].as_str().unwrap_or("Unknown Title").to_string(),
+            artists: t["artists"].as_array().unwrap_or(&vec![]).iter().filter_map(|a| a.as_str().map(String::from)).collect(),
+            cover_url: t["cover_url"].as_str().map(String::from),
+            duration_ms: t["duration_ms"].as_u64().unwrap_or(0),
+            track_number: (i + 1) as u32,
+            folder_name: Some(name.clone()),
+            playlist_url: Some(url.to_string()),
+            ..Default::default()
+        });
     }
     if mapped.is_empty() { return Err("Could not extract any tracks from the YouTube playlist.".to_string()); }
     Ok(mapped)
@@ -226,7 +226,7 @@ async fn fetch_youtube_track(youtube_url: &str) -> Result<Vec<TrackMeta>, String
     let resp = client.get(&format!("https://www.youtube.com/oembed?url={}&format=json", encoded))
         .header("User-Agent", "Mozilla/5.0").send().await.map_err(|e| format!("Network error: {e}"))?;
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
-    
+
     Ok(vec![TrackMeta {
         id: youtube_url.to_string(),
         title: json["title"].as_str().unwrap_or("YouTube Video").to_string(),
@@ -293,6 +293,7 @@ async fn convert_existing_video_to_audio(
     title: &str,
     artist: &str,
 ) -> Result<(), String> {
+    // 1. Download cover art to a temp file if available
     let cover_path: Option<PathBuf> = match cover_url {
         Some(url) => {
             let tmp = std::env::temp_dir().join(format!("d3khan_cover_{}.jpg", std::process::id()));
@@ -309,7 +310,9 @@ async fn convert_existing_video_to_audio(
         None => None,
     };
 
+    // 2. Build ffmpeg arguments
     let mut args: Vec<String> = vec!["-i".to_string(), video_path.to_string_lossy().to_string()];
+
     if let Some(c) = &cover_path {
         args.push("-i".to_string());
         args.push(c.to_string_lossy().to_string());
@@ -321,6 +324,7 @@ async fn convert_existing_video_to_audio(
     } else {
         args.push("-vn".to_string());
     }
+
     args.push("-acodec".to_string()); args.push("libmp3lame".to_string());
     args.push("-q:a".to_string()); args.push("2".to_string());
     args.push("-metadata".to_string()); args.push(format!("title={}", title));
@@ -334,17 +338,20 @@ async fn convert_existing_video_to_audio(
         .await
         .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
 
+    // 3. Fallback if cover-art embedding fails
     let ok = if output.status.success() {
         true
     } else if cover_path.is_some() {
+        let fb_args: Vec<String> = vec![
+            "-i".to_string(), video_path.to_string_lossy().to_string(),
+            "-vn".to_string(), "-acodec".to_string(), "libmp3lame".to_string(),
+            "-q:a".to_string(), "2".to_string(),
+            "-metadata".to_string(), format!("title={}", title),
+            "-metadata".to_string(), format!("artist={}", artist),
+            "-y".to_string(), audio_path.to_string_lossy().to_string(),
+        ];
         let fallback = tokio::process::Command::new(ffmpeg)
-            .args([
-                "-i", video_path.to_str().unwrap_or_default(),
-                "-vn", "-acodec", "libmp3lame", "-q:a", "2",
-                "-metadata", &format!("title={}", title),
-                "-metadata", &format!("artist={}", artist),
-                "-y", audio_path.to_str().unwrap_or_default(),
-            ])
+            .args(&fb_args)
             .output()
             .await
             .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
@@ -354,6 +361,7 @@ async fn convert_existing_video_to_audio(
     };
 
     if let Some(c) = &cover_path { let _ = std::fs::remove_file(c); }
+
     if !ok {
         return Err(format!("ffmpeg conversion failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
@@ -419,7 +427,7 @@ pub async fn download_batch(
         let out_base = target_dir.join(&file_stem);
         let audio_base = audio_dir.join(&file_stem);
 
-        // --- AUDIO MODE: Check for existing video and convert first (ONLY for YouTube links) ---
+        // --- AUDIO MODE: convert existing video ONLY for YouTube links ---
         if !is_video && is_youtube {
             let candidate_video_bases = vec![
                 audio_dir.join(&file_stem),
@@ -431,16 +439,23 @@ pub async fn download_batch(
                 for ext in &["mp4", "webm", "mkv"] {
                     let video_path = base.with_extension(ext);
                     if !video_path.exists() { continue; }
-                    
+
                     let audio_path = audio_base.with_extension("mp3");
                     if audio_path.exists() && !overwrite_mode { converted = true; break; }
-                    
+
                     let _ = app.emit("download-progress", json!({
                         "percent": (i as f64 / total as f64) * 100.0,
                         "status": format!("Converting existing video to MP3: {}", meta.title)
                     }));
-                    
-                    match convert_existing_video_to_audio(&video_path, &audio_path, &ffmpeg_path, meta.cover_url.as_deref(), &meta.title, &meta.artists.join(", ")).await {
+
+                    match convert_existing_video_to_audio(
+                        &video_path,
+                        &audio_path,
+                        &ffmpeg_path,
+                        meta.cover_url.as_deref(),
+                        &meta.title,
+                        &meta.artists.join(", "),
+                    ).await {
                         Ok(()) => {
                             let key = sync_key(meta, "audio");
                             state.downloaded_tracks.insert(key.clone());
@@ -520,8 +535,19 @@ pub async fn download_batch(
                 }));
             }
 
+            let artists_str = meta.artists.join(", ");
+            let duration_str = meta.duration_ms.to_string();
+
             let sidecar_command = app.shell().sidecar("downloader").map_err(|e| format!("Sidecar error: {e}"))?
-                .args([query.as_str(), out_base.to_string_lossy().as_ref(), ffmpeg_str.as_str(), meta.title.as_str(), meta.artists.join(", ").as_str(), media_mode]);
+                .args([
+                    query.as_str(),
+                    out_base.to_string_lossy().as_ref(),
+                    ffmpeg_str.as_str(),
+                    meta.title.as_str(),
+                    artists_str.as_str(),
+                    media_mode,
+                    duration_str.as_str(), // 7th arg: duration for YTM matching
+                ]);
 
             let (mut rx, _child) = sidecar_command.spawn().map_err(|e| format!("Spawn failed: {e}"))?;
             let mut downloaded_path: Option<PathBuf> = None;
