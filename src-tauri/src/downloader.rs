@@ -134,7 +134,7 @@ pub async fn resolve_input(app: &AppHandle, input: &str) -> Result<Vec<TrackMeta
     let mut cache = load_cache(app);
     if let Some(cached_results) = cache.get(&cache_key) { return Ok(cached_results.clone()); }
 
-    let results = search_youtube(app, trimmed, 10).await?;
+    let results = search_youtube(app, trimmed, 20).await?;
     if !results.is_empty() {
         cache.insert(cache_key, results.clone());
         save_cache(app, &cache);
@@ -184,11 +184,8 @@ async fn fetch_spotify_playlist(url: &str, app: &AppHandle) -> Result<Vec<TrackM
 
 async fn fetch_youtube_playlist(url: &str, app: &AppHandle) -> Result<Vec<TrackMeta>, String> {
     let sidecar = app.shell().sidecar("downloader").map_err(|e| format!("Sidecar error: {e}"))?;
-    let output = sidecar
-        .args(["--playlist", url])
-        .output().await
+    let output = sidecar.args(["--playlist", url]).output().await
         .map_err(|e| format!("Playlist sidecar failed: {e}"))?;
-
     if !output.status.success() {
         return Err(format!("Playlist sidecar failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
@@ -522,7 +519,7 @@ pub async fn download_batch(
         sleep(Duration::from_secs(5)).await;
 
         while attempts < MAX_ATTEMPTS && !success {
-            if attempts > 0 {
+            if attempts> 0 {
                 let _ = app.emit("download-progress", json!({
                     "percent": (i as f64 / total as f64) * 100.0,
                     "status": format!("Retrying {} (Attempt {}/{})...", meta.title, attempts + 1, MAX_ATTEMPTS)

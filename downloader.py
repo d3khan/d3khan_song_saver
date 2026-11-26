@@ -4,9 +4,7 @@ import json
 import shutil
 import platform
 from typing import Any, Optional
-from urllib.parse import quote
 
-import requests
 import yt_dlp
 
 try:
@@ -17,21 +15,12 @@ except Exception as e:
     _YTM_AVAILABLE = False
 
 
-def parse_spotify_title(title: Optional[str]) -> tuple[str, str]:
-    if not title:
-        return "", ""
-    if " - " in title:
-        artist, track = title.split(" - ", 1)
-        return artist.strip(), track.strip()
-    return "", title.strip()
-
-
 def cleanup_leftovers(out_base: str) -> None:
     for ext in [".webp", ".png", ".jpg", ".temp.mp3", ".temp.mp4", ".part", ".ytdl"]:
-        leftover = out_base + ext
-        if os.path.exists(leftover):
+        p = out_base + ext
+        if os.path.exists(p):
             try:
-                os.remove(leftover)
+                os.remove(p)
             except Exception:
                 pass
 
@@ -50,21 +39,20 @@ def prepare_ffmpeg(ffmpeg_path: str) -> Optional[str]:
         return None
     cache_dir = get_ffmpeg_cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
-    target_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    dest_path = os.path.join(cache_dir, target_name)
-    if os.path.exists(dest_path) and os.path.getsize(dest_path) == os.path.getsize(ffmpeg_path):
+    name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    dest = os.path.join(cache_dir, name)
+    if os.path.exists(dest) and os.path.getsize(dest) == os.path.getsize(ffmpeg_path):
         return cache_dir
     try:
-        shutil.copy2(ffmpeg_path, dest_path)
-        os.chmod(dest_path, 0o755)
+        shutil.copy2(ffmpeg_path, dest)
+        os.chmod(dest, 0o755)
         return cache_dir
     except Exception as e:
-        print(f"Warning: Could not prepare bundled ffmpeg: {e}", file=sys.stderr)
+        print(f"Warning: could not stage ffmpeg: {e}", file=sys.stderr)
         return None
 
 
-def find_ytmusic_video_id(query: str, artist: str = "", song: str = "",
-                          duration_s: float = None) -> Optional[str]:
+def find_ytmusic_video_id(query, artist="", song="", duration_s=None):
     if not _YTM_AVAILABLE or not query:
         return None
     try:
@@ -84,7 +72,7 @@ def find_ytmusic_video_id(query: str, artist: str = "", song: str = "",
             s += 2
         if any(w in title for w in ("live", "remix", "cover", "sped up", "slowed", "instrumental")):
             s -= 3
-        names = " ".join(a.get("name", "") for a in r.get("artists") or []).lower()
+        names = " ".join(a.get("name", "") for a in (r.get("artists") or [])).lower()
         if artist and artist.split(",")[0].strip().lower() in names:
             s += 2
         ds = r.get("duration_seconds")
@@ -95,55 +83,54 @@ def find_ytmusic_video_id(query: str, artist: str = "", song: str = "",
     return max(results, key=score).get("videoId")
 
 
-def resolve_target(search_query: str, song: str, artist: str, media_mode: str,
-                   duration_s: float = None) -> tuple[str, bool]:
-    q = search_query.strip()
+def resolve_target(search_query, song, artist, media_mode, duration_s=None):
+    q = (search_query or "").strip()
     is_url = q.startswith("http")
     is_yt = is_url and ("youtube.com" in q or "youtu.be" in q or "music.youtube.com" in q)
     if is_yt:
         return q, True
-    human_query = f"{artist} {song}".strip() if (artist or song) else q
+    human = f"{artist} {song}".strip() if (artist or song) else q
     if media_mode == "video":
-        return f"{human_query} official video", False
-    vid = find_ytmusic_video_id(human_query, artist, song, duration_s)
+        return f"{human} official video", False
+    vid = find_ytmusic_video_id(human, artist, song, duration_s)
     if vid:
         return f"https://music.youtube.com/watch?v={vid}", True
-    return f"{human_query} official audio", False
+    return f"{human} official audio", False
 
 
-# ---------- NEW: search mode (uses frozen yt_dlp module, NO external binary) ----------
-def cmd_search(query: str, limit: int) -> None:
+def _entry(v, i=None, playlist=None, url=None):
+    vid = v.get("id") or ""
+    dur = v.get("duration") or 0
+    t = {
+        "id": f"https://www.youtube.com/watch?v={vid}",
+        "title": v.get("title") or "Unknown Title",
+        "artists": [v.get("uploader") or v.get("channel") or "YouTube"],
+        "cover_url": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+        "duration_ms": int(float(dur) * 1000),
+    }
+    if i is not None:
+        t["track_number"] = i + 1
+        t["folder_name"] = playlist
+        t["playlist_url"] = url
+    return t
+
+
+def cmd_search(query, limit):
     opts = {
         "quiet": True, "no_warnings": True, "extract_flat": True,
         "skip_download": True, "noplaylist": True,
         "socket_timeout": 30, "retries": 3, "force_ipv4": True,
     }
-    target = f"ytsearch{limit}:{query} official audio"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(target, download=False)
-        tracks = []
-        for v in (info or {}).get("entries") or []:
-            if not v:
-                continue
-            vid = v.get("id") or ""
-            if not vid:
-                continue
-            dur = v.get("duration") or 0
-            tracks.append({
-                "id": f"https://www.youtube.com/watch?v={vid}",
-                "title": v.get("title") or "Unknown Title",
-                "artists": [v.get("uploader") or v.get("channel") or "YouTube"],
-                "cover_url": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
-                "duration_ms": int(float(dur) * 1000),
-            })
+            info = ydl.extract_info(f"ytsearch{limit}:{query} official audio", download=False)
+        tracks = [_entry(v) for v in ((info or {}).get("entries") or []) if v and v.get("id")]
         print(json.dumps({"status": "success", "tracks": tracks}))
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
 
 
-# ---------- NEW: playlist mode (uses frozen yt_dlp module, NO external binary) ----------
-def cmd_playlist(url: str) -> None:
+def cmd_playlist(url):
     opts = {
         "quiet": True, "no_warnings": True, "extract_flat": True,
         "skip_download": True, "yes_playlist": True, "ignoreerrors": True,
@@ -154,37 +141,21 @@ def cmd_playlist(url: str) -> None:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         name = (info or {}).get("title") or "YouTube Playlist"
-        tracks = []
-        for i, v in enumerate((info or {}).get("entries") or []):
-            if not v:
-                continue
-            vid = v.get("id") or ""
-            if not vid:
-                continue
-            dur = v.get("duration") or 0
-            tracks.append({
-                "id": f"https://www.youtube.com/watch?v={vid}",
-                "title": v.get("title") or "Unknown Title",
-                "artists": [v.get("uploader") or v.get("channel") or "YouTube"],
-                "cover_url": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
-                "duration_ms": int(float(dur) * 1000),
-                "track_number": i + 1,
-                "folder_name": name,
-                "playlist_url": url,
-            })
+        entries = [v for v in ((info or {}).get("entries") or []) if v and v.get("id")]
+        tracks = [_entry(v, i, name, url) for i, v in enumerate(entries)]
         print(json.dumps({"status": "success", "playlist_name": name, "tracks": tracks}))
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
 
 
-def download_track(search_query: str, out_base: str, ffmpeg_path: str, song: str,
-                   artist: str, media_mode: str = "audio", duration_ms: int = 0) -> None:
+def download_track(search_query, out_base, ffmpeg_path, song, artist,
+                   media_mode="audio", duration_ms=0):
     media_mode = (media_mode or "audio").lower()
     is_video = media_mode == "video"
     duration_s = duration_ms / 1000.0 if duration_ms else None
-    target, is_direct_url = resolve_target(search_query, song, artist, media_mode, duration_s)
+    target, is_direct = resolve_target(search_query, song, artist, media_mode, duration_s)
 
-    ydl_opts: dict[str, Any] = {
+    opts: dict[str, Any] = {
         "noplaylist": True,
         "writethumbnail": True,
         "convert_thumbnails": "jpg",
@@ -195,59 +166,50 @@ def download_track(search_query: str, out_base: str, ffmpeg_path: str, song: str
         "force_ipv4": True,
         "nopart": True,
     }
-
     if is_video:
-        ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-        ydl_opts["merge_output_format"] = "mp4"
-        ydl_opts["postprocessors"] = [{"key": "EmbedThumbnail"}, {"key": "FFmpegMetadata"}]
+        opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        opts["merge_output_format"] = "mp4"
+        opts["postprocessors"] = [{"key": "EmbedThumbnail"}, {"key": "FFmpegMetadata"}]
     else:
-        metadata_args = []
+        meta_args = []
         if song:
-            metadata_args += ["-metadata", f"title={song}"]
+            meta_args += ["-metadata", f"title={song}"]
         if artist:
-            metadata_args += ["-metadata", f"artist={artist}"]
-        ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [
+            meta_args += ["-metadata", f"artist={artist}"]
+        opts["format"] = "bestaudio/best"
+        opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
             {"key": "FFmpegMetadata"},
             {"key": "EmbedThumbnail"},
         ]
-        if metadata_args:
-            ydl_opts["postprocessor_args"] = {"FFmpegMetadata": metadata_args}
+        if meta_args:
+            opts["postprocessor_args"] = {"FFmpegMetadata": meta_args}
 
-    if not is_direct_url:
-        ydl_opts["default_search"] = "ytsearch1"
+    if not is_direct:
+        opts["default_search"] = "ytsearch1"
 
-    ffmpeg_cache = prepare_ffmpeg(ffmpeg_path)
-    if ffmpeg_cache:
-        ydl_opts["ffmpeg_location"] = ffmpeg_cache
+    cache = prepare_ffmpeg(ffmpeg_path)
+    if cache:
+        opts["ffmpeg_location"] = cache
 
-    final_file = None
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target, download=True)
             if not info:
                 cleanup_leftovers(out_base)
                 print(json.dumps({"status": "error", "message": "No info returned"}))
                 return
-            filename = ydl.prepare_filename(info)
-            base = os.path.splitext(filename)[0]
-            possible_exts = [".mp4", ".webm", ".mkv", ".m4a"] if is_video else [".mp3", ".m4a", ".opus", ".webm"]
-            for ext in possible_exts:
-                candidate = base + ext
-                if os.path.exists(candidate):
-                    final_file = candidate
-                    break
-            if not final_file:
-                final_file = filename
-            if not os.path.exists(final_file):
+            base = os.path.splitext(ydl.prepare_filename(info))[0]
+            exts = [".mp4", ".webm", ".mkv", ".m4a"] if is_video else [".mp3", ".m4a", ".opus", ".webm"]
+            final = next((base + e for e in exts if os.path.exists(base + e)), None)
+            if not final:
                 cleanup_leftovers(out_base)
-                print(json.dumps({"status": "error", "message": f"File not found: {final_file}"}))
+                print(json.dumps({"status": "error", "message": "Output file not found"}))
                 return
-            if os.path.getsize(final_file) < 10_000:
+            if os.path.getsize(final) < 10000:
                 cleanup_leftovers(out_base)
                 try:
-                    os.remove(final_file)
+                    os.remove(final)
                 except Exception:
                     pass
                 print(json.dumps({"status": "error", "message": "Output too small"}))
@@ -258,28 +220,29 @@ def download_track(search_query: str, out_base: str, ffmpeg_path: str, song: str
         return
 
     cleanup_leftovers(out_base)
-    print(json.dumps({"status": "success", "path": final_file}))
+    print(json.dumps({"status": "success", "path": final}))
 
 
-def main() -> None:
-    args = sys.argv[1:]
-    if args and args[0] == "--search":
-        cmd_search(args[1] if len(args) > 1 else "", int(args[2]) if len(args) > 2 else 10)
+def main():
+    a = sys.argv[1:]
+    if a and a[0] == "--search":
+        cmd_search(a[1] if len(a) > 1 else "", int(a[2]) if len(a) > 2 else 10)
         return
-    if args and args[0] == "--playlist":
-        cmd_playlist(args[1] if len(args) > 1 else "")
+    if a and a[0] == "--playlist":
+        cmd_playlist(a[1] if len(a) > 1 else "")
         return
-    if len(args) >= 3:
-        query, out_base, ffmpeg_path = args[0], args[1], args[2]
-        song = args[3] if len(args) > 3 else ""
-        artist = args[4] if len(args) > 4 else ""
-        media_mode = args[5] if len(args) > 5 else "audio"
-        duration_ms = int(args[6]) if len(args) > 6 else 0
-        download_track(query, out_base, ffmpeg_path, song, artist, media_mode, duration_ms)
-    else:
-        print("Usage: downloader <query> <out_base> <ffmpeg> [song] [artist] [mode] [duration_ms]")
-        print("       downloader --search <query> <limit>")
-        print("       downloader --playlist <url>")
+    if len(a) >= 3:
+        download_track(
+            a[0], a[1], a[2],
+            a[3] if len(a) > 3 else "",
+            a[4] if len(a) > 4 else "",
+            a[5] if len(a) > 5 else "audio",
+            int(a[6]) if len(a) > 6 else 0,
+        )
+        return
+    print("Usage: downloader <query> <out_base> <ffmpeg> [song] [artist] [mode] [duration_ms]")
+    print("       downloader --search <query> <limit>")
+    print("       downloader --playlist <url>")
 
 
 if __name__ == "__main__":
