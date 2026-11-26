@@ -89,10 +89,22 @@ jobs:
           pip install pyinstaller requests spotifyscraper
 
       - name: Build downloader sidecar
-        run: pyinstaller --onefile --name downloader downloader.py
+        shell: bash
+        run: |
+          COLLECT="--collect-all ytmusicapi --collect-all yt_dlp"
+          if python -c "import yt_dlp_ejs" 2>/dev/null; then
+            COLLECT="$COLLECT --collect-all yt_dlp_ejs"
+          fi
+          pyinstaller --onefile --name downloader $COLLECT downloader.py
 
       - name: Build spotify_meta sidecar
-        run: pyinstaller --onefile --name spotify_meta spotify_meta_sidecar.py
+        shell: bash
+        run: |
+          COLLECT=""
+          if python -c "import spotify_scraper" 2>/dev/null; then
+            COLLECT="--collect-all spotify_scraper"
+          fi
+          pyinstaller --onefile --name spotify_meta $COLLECT spotify_meta_sidecar.py
 
       - name: Prepare sidecars (Windows)
         if: matrix.platform == 'windows-latest'
