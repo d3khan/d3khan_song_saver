@@ -50,6 +50,13 @@
       if (status.includes("All done")) addLog(status, "success");
     });
 
+    window.__TAURI__.event.listen("download-bytes", (event) => {
+      const p = event.payload || {};
+      const mb = (n) => ((Number(n) || 0) / 1048576).toFixed(1);
+      const el = document.getElementById("progress-title");
+      if (el) el.textContent = `${p.title || "Downloading"} — ${mb(p.downloaded)} / ${mb(p.total)} MB (${p.percent || 0}%)`;
+    });
+
     window.__TAURI__.event.listen("download-error", (event) => {
       addLog(event.payload.error, "error");
     });
@@ -120,7 +127,7 @@
     if (!state.isTauri) return;
     try {
       await window.__TAURI__.core.invoke("save_settings", {
-        settings: { source: "none", outputDir: state.folder || null, mediaMode: state.mediaMode, overwrite: state.mode === "download" },
+        settings: { source: "none", outputDir: state.folder || null, mediaMode: state.mediaMode, quality: (document.getElementById("quality-select")?.value || "best"), overwrite: state.mode === "download" },
       });
     } catch (e) { console.warn("save_settings failed", e); }
   }

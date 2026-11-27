@@ -90,6 +90,7 @@ pub fn run() {
             commands::resolve_input,
             commands::resolve_bulk_input,
             commands::search_youtube,
+            commands::probe_size,
             commands::download_track,
             commands::pick_folder,
             commands::get_settings,

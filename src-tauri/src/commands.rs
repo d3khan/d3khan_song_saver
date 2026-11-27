@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_shell::ShellExt;
 
 // -------------------- Settings --------------------
 
@@ -221,4 +222,19 @@ pub async fn delete_orphaned_files(
     }
     crate::downloader::remove_files_from_manifest(std::path::Path::new(&state_path), &files);
     Ok(())
+}
+// -------------------- Size / quality probe (before download) --------------------
+#[tauri::command(rename_all = "camelCase")]
+pub async fn probe_size(app: AppHandle, url: String, quality: Option<String>) -> Result<serde_json::Value, String> {
+    let q = quality.unwrap_or_else(|| "best".to_string());
+    let out = app.shell().sidecar("downloader").map_err(|e| e.to_string())?
+        .args(["--formats", url.as_str(), q.as_str()])
+        .output().await.map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout.lines().rev().find(|l| l.trim().starts_with('{')).unwrap_or("{}");
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    if v["status"] == "error" {
+        return Err(v["message"].as_str().unwrap_or("probe failed").to_string());
+    }
+    Ok(v)
 }

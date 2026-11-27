@@ -86,7 +86,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
           pip install --force-reinstall git+https://github.com/sigma67/ytmusicapi.git
-          pip install pyinstaller requests spotifyscraper
+          pip install pyinstaller requests spotifyscraper mutagen
 
       - name: Build downloader sidecar
         shell: bash
@@ -95,7 +95,12 @@ jobs:
           if python -c "import yt_dlp_ejs" 2>/dev/null; then
             COLLECT="$COLLECT --collect-all yt_dlp_ejs"
           fi
-          pyinstaller --onefile --name downloader $COLLECT downloader.py
+          EXTRA="--noupx --clean"
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            python build_scripts/exe_version.py > version_info.txt
+            EXTRA="$EXTRA --version-file version_info.txt"
+          fi
+          pyinstaller --onefile $EXTRA --name downloader $COLLECT downloader.py
 
       - name: Build spotify_meta sidecar
         shell: bash
@@ -104,7 +109,12 @@ jobs:
           if python -c "import spotify_scraper" 2>/dev/null; then
             COLLECT="--collect-all spotify_scraper"
           fi
-          pyinstaller --onefile --name spotify_meta $COLLECT spotify_meta_sidecar.py
+          EXTRA="--noupx --clean"
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            python build_scripts/exe_version.py > version_info.txt
+            EXTRA="$EXTRA --version-file version_info.txt"
+          fi
+          pyinstaller --onefile $EXTRA --name spotify_meta $COLLECT spotify_meta_sidecar.py
 
       - name: Prepare sidecars (Windows)
         if: matrix.platform == 'windows-latest'
