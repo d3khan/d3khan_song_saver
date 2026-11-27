@@ -1,5 +1,5 @@
 """YouTube Music catalogue matcher - prefers the official studio art track."""
-from ..core.events import warn
+from core.events import warn
 
 try:
     from ytmusicapi import YTMusic
