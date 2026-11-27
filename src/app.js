@@ -207,6 +207,7 @@
     container.hidden = false;
     try {
       const results = await window.__TAURI__.core.invoke("resolve_bulk_input", { inputs: links });
+    if (Array.isArray(results) && results.length) populateQualityDropdown(results[0]);
       if (!results || results.length === 0) {
         container.innerHTML = `<div style="padding: 16px;">No results found.</div>`;
         addLog("No results found for bulk links.", "warn");
@@ -449,3 +450,39 @@
     });
   });
 })();
+// ---- dynamic quality dropdown: hidden until a track is found, shows size ----
+async function populateQualityDropdown(track) {
+  const sel = document.getElementById("quality-select");
+  if (!sel) return;
+  const box = sel.parentElement;
+  if (!track || !track.id) { if (box) box.style.display = "none"; return; }
+  sel.innerHTML = '<option value="best">Checking sizes…</option>';
+  if (box) box.style.display = "";
+  try {
+    const r = await window.__TAURI__.core.invoke("probe_size", { url: track.id, quality: "best" });
+    const qs = (r && r.qualities) || [];
+    sel.innerHTML = "";
+    if (!qs.length) {
+      const o = document.createElement("option");
+      o.value = "best"; o.textContent = "Best (1080p, H.264)";
+      sel.appendChild(o);
+    }
+    qs.forEach((q) => {
+      const o = document.createElement("option");
+      o.value = String(q.height);
+      const mb = q.size_bytes ? (q.size_bytes / 1048576).toFixed(1) + " MB" : "size n/a";
+      o.textContent = q.height + "p · " + (q.vcodec || "") + " · " + mb;
+      sel.appendChild(o);
+    });
+    const a = document.createElement("option");
+    a.value = "audio"; a.textContent = "Audio only (MP3)";
+    sel.appendChild(a);
+  } catch (e) {
+    sel.innerHTML = '<option value="best">Best (1080p, H.264)</option>';
+  }
+}
+window.populateQualityDropdown = populateQualityDropdown;
+document.addEventListener("DOMContentLoaded", () => {
+  const sel = document.getElementById("quality-select");
+  if (sel && sel.parentElement) sel.parentElement.style.display = "none";
+});
