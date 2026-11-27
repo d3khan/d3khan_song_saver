@@ -1,7 +1,9 @@
 pub mod batch;
 pub mod commands;
-pub mod downloader;
+pub mod download;
 pub mod metadata;
+pub mod resolver;
+pub mod sidecar;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -28,10 +30,10 @@ pub fn run() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-
             if now >= EXPIRY_UNIX {
-                use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
-                let should_update = app.dialog()
+                use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+                let should_update = app
+                    .dialog()
                     .message("This version of d3khan song saver has expired.\n\nClick 'Update' to go to the latest release.")
                     .title("Version Expired")
                     .kind(MessageDialogKind::Error)
@@ -49,7 +51,7 @@ pub fn run() {
                 std::process::exit(0);
             }
             // --- END EXPIRY GUARD ---
-            
+
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let settings = commands::resolve_settings(&settings_path);
             app.manage(AppState {
@@ -59,7 +61,6 @@ pub fn run() {
             });
             app.manage(batch::BatchControl::default());
 
-            // System Tray
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
@@ -69,10 +70,10 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
                         }
                     }
                     _ => {}

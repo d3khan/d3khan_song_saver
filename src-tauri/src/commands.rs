@@ -4,10 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::ShellExt;
 
 // -------------------- Settings --------------------
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -16,27 +14,17 @@ pub struct Settings {
     #[serde(default)]
     pub output_dir: Option<String>,
     #[serde(default = "default_media_mode")]
-    pub media_mode: String, // "audio" | "video"
+    pub media_mode: String,
     #[serde(default)]
     pub overwrite: bool,
 }
 
-fn default_source() -> String {
-    "none".into()
-}
-
-fn default_media_mode() -> String {
-    "audio".into()
-}
+fn default_source() -> String { "none".into() }
+fn default_media_mode() -> String { "audio".into() }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            source: "none".into(),
-            output_dir: None,
-            media_mode: "audio".into(),
-            overwrite: false,
-        }
+        Self { source: "none".into(), output_dir: None, media_mode: "audio".into(), overwrite: false }
     }
 }
 
@@ -53,9 +41,7 @@ pub fn resolve_settings(path: &std::path::Path) -> Settings {
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_settings(app: AppHandle) -> Result<Settings, String> {
-    let path = app
-        .path()
-        .app_config_dir()
+    let path = app.path().app_config_dir()
         .map_err(|e| format!("Cannot resolve config dir: {e}"))?
         .join("settings.json");
     Ok(resolve_settings(&path))
@@ -63,20 +49,16 @@ pub async fn get_settings(app: AppHandle) -> Result<Settings, String> {
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
+    let dir = app.path().app_config_dir()
         .map_err(|e| format!("Cannot resolve config dir: {e}"))?;
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create config dir: {e}"))?;
     let path = dir.join("settings.json");
-    let text = serde_json::to_string_pretty(&settings)
-        .map_err(|e| format!("Serialize settings: {e}"))?;
+    let text = serde_json::to_string_pretty(&settings).map_err(|e| format!("Serialize settings: {e}"))?;
     fs::write(&path, text).map_err(|e| format!("Write settings: {e}"))?;
     Ok(settings)
 }
 
-// -------------------- Track result DTO --------------------
-
+// -------------------- DTO --------------------
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackResult {
@@ -89,152 +71,96 @@ pub struct TrackResult {
     pub folder_name: Option<String>,
 }
 
-// -------------------- Resolve single input --------------------
+fn to_result(t: TrackMeta) -> TrackResult {
+    TrackResult {
+        id: t.id,
+        title: t.title,
+        artist: t.artists.join(", "),
+        cover_url: t.cover_url,
+        year: t.release_date,
+        duration_ms: t.duration_ms,
+        folder_name: t.folder_name,
+    }
+}
 
+// -------------------- Resolve / search --------------------
 #[tauri::command(rename_all = "camelCase")]
 pub async fn resolve_input(app: AppHandle, input: String) -> Result<Vec<TrackResult>, String> {
-    let tracks = crate::downloader::resolve_input(&app, &input).await?;
-    Ok(tracks
-        .into_iter()
-        .map(|t| TrackResult {
-            id: t.id,
-            title: t.title,
-            artist: t.artists.join(", "),
-            cover_url: t.cover_url,
-            year: t.release_date,
-            duration_ms: t.duration_ms,
-            folder_name: t.folder_name,
-        })
-        .collect())
+    let tracks = crate::resolver::resolve(&app, &input).await?;
+    Ok(tracks.into_iter().map(to_result).collect())
 }
 
-// -------------------- Resolve bulk inputs --------------------
-
 #[tauri::command(rename_all = "camelCase")]
-pub async fn resolve_bulk_input(
-    app: AppHandle,
-    inputs: Vec<String>,
-) -> Result<Vec<TrackResult>, String> {
-    let mut all_tracks = Vec::new();
+pub async fn resolve_bulk_input(app: AppHandle, inputs: Vec<String>) -> Result<Vec<TrackResult>, String> {
+    let mut all = Vec::new();
     for input in inputs {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(tracks) = crate::downloader::resolve_input(&app, trimmed).await {
-            all_tracks.extend(tracks);
+        let t = input.trim();
+        if t.is_empty() { continue; }
+        if let Ok(tracks) = crate::resolver::resolve(&app, t).await {
+            all.extend(tracks);
         }
     }
-    Ok(all_tracks
-        .into_iter()
-        .map(|t| TrackResult {
-            id: t.id,
-            title: t.title,
-            artist: t.artists.join(", "),
-            cover_url: t.cover_url,
-            year: t.release_date,
-            duration_ms: t.duration_ms,
-            folder_name: t.folder_name,
-        })
-        .collect())
+    Ok(all.into_iter().map(to_result).collect())
 }
 
-// -------------------- Fast YouTube query search --------------------
-
 #[tauri::command(rename_all = "camelCase")]
-pub async fn search_youtube(
-    app: AppHandle,
-    query: String,
-    limit: Option<u32>,
-) -> Result<Vec<TrackResult>, String> {
-    let metas = crate::downloader::search_youtube(&app, &query, limit.unwrap_or(10)).await?;
-    Ok(metas
-        .into_iter()
-        .map(|t| TrackResult {
-            id: t.id,
-            title: t.title,
-            artist: t.artists.join(", "),
-            cover_url: t.cover_url,
-            year: t.release_date,
-            duration_ms: t.duration_ms,
-            folder_name: t.folder_name,
-        })
-        .collect())
+pub async fn search_youtube(app: AppHandle, query: String, limit: Option<u32>) -> Result<Vec<TrackResult>, String> {
+    let metas = crate::resolver::search(&app, &query, limit.unwrap_or(10)).await?;
+    Ok(metas.into_iter().map(to_result).collect())
+}
+
+/// Size + available qualities BEFORE downloading.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn probe_size(app: AppHandle, url: String, quality: Option<String>) -> Result<serde_json::Value, String> {
+    let q = quality.unwrap_or_else(|| "best".to_string());
+    crate::sidecar::call(&app, "downloader", &["--formats", url.as_str(), q.as_str()]).await
 }
 
 // -------------------- Folder picker --------------------
-
 #[tauri::command(rename_all = "camelCase")]
 pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
-    let folder = app
-        .dialog()
-        .file()
-        .set_title("Choose output folder")
-        .blocking_pick_folder();
+    let folder = app.dialog().file().set_title("Choose output folder").blocking_pick_folder();
     Ok(folder.map(|p| p.to_string()))
 }
 
 // -------------------- Download --------------------
-
 #[tauri::command(rename_all = "camelCase")]
 pub async fn download_track(
     app: AppHandle,
     tracks: Vec<TrackResult>,
     output_dir: String,
-    mode: Option<String>,       // "download" | "sync"  → overwrite behaviour
-    media_mode: Option<String>, // "audio" | "video"    → media type
+    mode: Option<String>,
+    media_mode: Option<String>,
+    quality: Option<String>,
 ) -> Result<(), String> {
     let out_path = PathBuf::from(&output_dir);
-
-    // Existing contract: "download" means overwrite; anything else is sync.
     let overwrite = mode.as_deref() == Some("download");
-
-    let media = media_mode.as_deref().unwrap_or("audio").to_lowercase();
-    let media = if media == "video" { "video" } else { "audio" };
-
-    let metas: Vec<TrackMeta> = tracks
-        .into_iter()
-        .map(|t| TrackMeta {
-            id: t.id,
-            title: t.title,
-            artists: t.artist.split(", ").map(|s| s.to_string()).collect(),
-            cover_url: t.cover_url,
-            release_date: t.year,
-            duration_ms: t.duration_ms,
-            folder_name: t.folder_name,
-            ..Default::default()
-        })
-        .collect();
-
-    crate::downloader::download_batch(&app, metas, &out_path, overwrite, media).await
+    let media = match media_mode.as_deref().unwrap_or("audio").to_lowercase().as_str() {
+        "video" => "video",
+        _ => "audio",
+    };
+    let quality = quality.unwrap_or_else(|| "best".to_string());
+    let metas: Vec<TrackMeta> = tracks.into_iter().map(|t| TrackMeta {
+        id: t.id,
+        title: t.title,
+        artists: t.artist.split(", ").map(|s| s.to_string()).collect(),
+        cover_url: t.cover_url,
+        release_date: t.year,
+        duration_ms: t.duration_ms,
+        folder_name: t.folder_name,
+        ..Default::default()
+    }).collect();
+    crate::download::download_batch(&app, metas, &out_path, overwrite, media, &quality).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn delete_orphaned_files(
-    files: Vec<String>,
-    state_path: String,
-) -> Result<(), String> {
-    for path_str in &files {
-        let p = std::path::Path::new(path_str);
-        if p.exists() {
-            let _ = std::fs::remove_file(p);
+pub async fn delete_orphaned_files(files: Vec<String>, state_path: String) -> Result<(), String> {
+    for p in &files {
+        let path = std::path::Path::new(p);
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
         }
     }
-    crate::downloader::remove_files_from_manifest(std::path::Path::new(&state_path), &files);
+    crate::download::state::remove_files_from_manifest(std::path::Path::new(&state_path), &files);
     Ok(())
-}
-// -------------------- Size / quality probe (before download) --------------------
-#[tauri::command(rename_all = "camelCase")]
-pub async fn probe_size(app: AppHandle, url: String, quality: Option<String>) -> Result<serde_json::Value, String> {
-    let q = quality.unwrap_or_else(|| "best".to_string());
-    let out = app.shell().sidecar("downloader").map_err(|e| e.to_string())?
-        .args(["--formats", url.as_str(), q.as_str()])
-        .output().await.map_err(|e| e.to_string())?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let line = stdout.lines().rev().find(|l| l.trim().starts_with('{')).unwrap_or("{}");
-    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-    if v["status"] == "error" {
-        return Err(v["message"].as_str().unwrap_or("probe failed").to_string());
-    }
-    Ok(v)
 }
