@@ -7,7 +7,7 @@ A cross-platform desktop app (**Tauri v2 + Rust + Python**) that turns Spotify l
 
 > **⚠️ Legal note:** Downloading copyrighted audio may violate the terms of service of the source sites and the rights of copyright holders. Use this only for content you are legally allowed to download — your own uploads, public-domain material, or with explicit permission. The author accepts no responsibility for misuse.
 
-## 🚀 What's new in 3.0.0
+## 🚀 What's new in 0.2.12
 
 **Official studio audio, not music-video rips.** Audio downloads now resolve through the YouTube Music catalog via `ytmusicapi`, then score candidates to prefer album/art tracks (`MUSIC_VIDEO_TYPE_ATV`) over official videos, live takes, remixes, covers and sped-up edits. Matching uses the artist, title and track duration already known from Spotify metadata.
 

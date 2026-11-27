@@ -1,7 +1,7 @@
 {
   "name": "d3khan-song-saver",
   "private": true,
-  "version": "3.0.0",
+  "version": "0.2.12",
   "description": "d3khan song saver - Tauri v2 desktop app that downloads and syncs Spotify playlists as tagged MP3s.",
   "scripts": {
     "tauri": "tauri",
