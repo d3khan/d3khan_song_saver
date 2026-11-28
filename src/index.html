@@ -279,10 +279,11 @@
   });
   document.addEventListener("click", function () { setTimeout(refreshTotal, 0); });
 </script>
-<!-- d3khan-quality-v4 -->
+<!-- d3khan-quality-v5 -->
 <script>
 (function () {
   var RATE = { "360": 100000, "480": 150000, "720": 325000, "1080": 600000, best: 600000 };
+  var PLACEHOLDER = '<option value="" disabled selected>Select quality</option>';
   window.__lastTracks = window.__lastTracks || [];
 
   function field() { return document.getElementById("quality-field") || (sel() || {}).parentElement || null; }
@@ -319,7 +320,6 @@
     return false;
   }
 
-  // size next to EACH quality, for the whole batch
   window.populateQualityDropdown = function () {
     var s = sel(); if (!s) return;
     var d = durTotal();
@@ -349,7 +349,10 @@
     var video = isVideo();
     var has = (window.__lastTracks || []).length > 0;
     f.style.display = video ? "" : "none";
-    if (s) s.disabled = !has;
+    if (s) {
+      s.disabled = !has;
+      if (!has) s.innerHTML = PLACEHOLDER;   // greyed-out default text
+    }
     if (video && s && !s.disabled) refreshTotal();
   }
   window.__applyQualityVisibility = apply;
