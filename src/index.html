@@ -387,6 +387,39 @@
   apply();
 })();
 </script>
+<!-- d3khan-meter-v1 -->
+<script>
+(function boot() {
+  if (!window.__TAURI__ || !window.__TAURI__.event || !window.__TAURI__.event.listen) {
+    setTimeout(boot, 100); return;
+  }
+  var el = document.getElementById("d3khan-meter");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "d3khan-meter";
+    el.style.cssText = "position:fixed;left:12px;right:12px;bottom:8px;z-index:9999;" +
+      "background:#101014;border:1px solid #333;border-radius:8px;padding:6px 10px;" +
+      "font:12px/1.4 monospace;color:#ddd;display:none;pointer-events:none;";
+    document.body.appendChild(el);
+  }
+  function mb(n) { return ((Number(n) || 0) / 1048576).toFixed(1); }
+  function eta(s) {
+    s = Number(s) || 0; if (!s) return "--:--";
+    var m = Math.floor(s / 60), r = Math.floor(s % 60);
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+  window.__TAURI__.event.listen("download-bytes", function (e) {
+    var p = e.payload || {};
+    el.style.display = "block";
+    el.textContent = (p.title || "Downloading") + " — " + mb(p.downloaded) + " / " + mb(p.total) +
+      " MB (" + (p.percent || 0) + "%) · " + mb(p.speed) + " MB/s · ETA " + eta(p.eta);
+  });
+  window.__TAURI__.event.listen("download-progress", function (e) {
+    var st = (e.payload || {}).status || "";
+    if (/Finished|Skipped|Converted|All done/i.test(st)) el.style.display = "none";
+  });
+})();
+</script>
 </body>
 
 </html>
