@@ -208,6 +208,7 @@
     try {
       const results = await window.__TAURI__.core.invoke("resolve_bulk_input", { inputs: links });
     if (Array.isArray(results) && results.length) populateQualityDropdown(results[0]);
+    if (Array.isArray(results) && results.length) populateQualityDropdown(results[0]);
       if (!results || results.length === 0) {
         container.innerHTML = `<div style="padding: 16px;">No results found.</div>`;
         addLog("No results found for bulk links.", "warn");
