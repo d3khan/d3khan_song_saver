@@ -179,7 +179,7 @@
     try {
       const results = isUrl
         ? await window.__TAURI__.core.invoke("resolve_input", { input: query })
-        : await window.__TAURI__.core.invoke("search_youtube", { query, limit: 10 });
+        : await window.__TAURI__.core.invoke("search_youtube", { query, limit: 20 });
       if (!results || results.length === 0) {
         container.innerHTML = `<div style="padding: 16px;">No results found.</div>`;
         addLog("No results found.", "warn");

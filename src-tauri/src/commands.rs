@@ -105,7 +105,7 @@ pub async fn resolve_bulk_input(app: AppHandle, inputs: Vec<String>) -> Result<V
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn search_youtube(app: AppHandle, query: String, limit: Option<u32>) -> Result<Vec<TrackResult>, String> {
-    let metas = crate::resolver::search(&app, &query, limit.unwrap_or(10)).await?;
+    let metas = crate::resolver::search(&app, &query, limit.unwrap_or(20)).await?;
     Ok(metas.into_iter().map(to_result).collect())
 }
 
