@@ -143,7 +143,7 @@ def main():
             fail(e)
         return
     if a and a[0] == "--search":
-        return cmd_search(a[1] if len(a) > 1 else "", int(a[2]) if len(a) > 2 else 10)
+        return cmd_search(a[1] if len(a) > 1 else "", int(a[2]) if len(a) > 2 else 20)
     if a and a[0] == "--playlist":
         return cmd_playlist(a[1] if len(a) > 1 else "")
     if a and a[0] == "--formats":

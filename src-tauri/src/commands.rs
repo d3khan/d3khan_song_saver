@@ -150,7 +150,7 @@ pub async fn download_track(
         folder_name: t.folder_name,
         ..Default::default()
     }).collect();
-    crate::download::download_batch(&app, metas, &out_path, overwrite, media, quality.as_deref().unwrap_or("best")).await
+    crate::download::download_batch(&app, metas, &out_path, overwrite, media, &quality).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -29,7 +29,7 @@ def _entry(v, i=None, playlist=None, url=None):
     )
 
 
-def search(query: str, limit: int = 10):
+def search(query: str, limit: int = 20):
     opts = dict(FLAT, noplaylist=True)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query} official audio",
