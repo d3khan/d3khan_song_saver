@@ -204,6 +204,82 @@
   </div>
 
   <script src="./app.js"></script>
+<!-- d3khan-quality-v2 -->
+<script>
+  // Bitrate table (bytes/sec, incl. audio) for size estimates.
+  var RATE = { audio: 24000, "360": 100000, "480": 150000, "720": 325000, "1080": 600000, best: 600000 };
+  window.__lastTracks = [];
+
+  function currentMode() {
+    try {
+      var act = document.querySelector('#media-mode-seg .active, #media-mode-seg [aria-pressed="true"]');
+      if (act) return /video/i.test(act.textContent) ? "video" : "audio";
+      if (window.state && window.state.mediaMode) return window.state.mediaMode;
+    } catch (e) {}
+    return "audio";
+  }
+
+  function estimateTotal(tracks, quality, mode) {
+    var key = (mode === "video") ? String(quality === "best" ? 1080 : quality) : "audio";
+    var rate = RATE[key] || RATE.best;
+    var bytes = 0;
+    (tracks || []).forEach(function (t) { bytes += ((t.durationMs || t.duration_ms || 0) / 1000) * rate; });
+    return bytes;
+  }
+
+  function refreshTotal() {
+    var sel = document.getElementById("quality-select");
+    var hint = document.getElementById("quality-hint");
+    if (!sel || !hint) return;
+    var mode = currentMode();
+    var bytes = estimateTotal(window.__lastTracks, sel.value, mode);
+    var mb = (bytes / 1048576).toFixed(1);
+    hint.textContent = window.__lastTracks.length
+      ? window.__lastTracks.length + " track(s) · ≈ " + mb + " MB total at " +
+        (mode === "video" ? (sel.value === "audio" ? "audio" : sel.value + "p") : "MP3")
+      : "Pick tracks to see per-quality sizes and the batch total.";
+  }
+
+  window.populateQualityDropdown = async function (track) {
+    var sel = document.getElementById("quality-select");
+    var hint = document.getElementById("quality-hint");
+    if (!sel) return;
+    sel.disabled = false;
+    if (!sel.options.length || sel.options[0].value === "best" && sel.options.length === 1) {
+      sel.innerHTML =
+        '<option value="best">Best (1080p, H.264)</option>' +
+        '<option value="1080">1080p</option><option value="720">720p</option>' +
+        '<option value="480">480p</option><option value="360">360p</option>' +
+        '<option value="audio">Audio only (MP3)</option>';
+    }
+    refreshTotal();
+  };
+
+  // Intercept resolve/search so we know the batch, and force the chosen quality on download.
+  (function hook() {
+    if (!window.__TAURI__ || !window.__TAURI__.core) { setTimeout(hook, 50); return; }
+    var orig = window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
+    window.__TAURI__.core.invoke = function (cmd, args) {
+      if (cmd === "download_track" && args && typeof args === "object") {
+        var s = document.getElementById("quality-select");
+        if (s && !s.disabled) args.quality = s.value;
+      }
+      return orig(cmd, args).then(function (res) {
+        if ((cmd === "resolve_input" || cmd === "resolve_bulk_input" || cmd === "search_youtube")
+            && Array.isArray(res) && res.length) {
+          window.__lastTracks = res;
+          window.populateQualityDropdown(res[0]);
+        }
+        return res;
+      });
+    };
+  })();
+
+  document.addEventListener("change", function (e) {
+    if (e.target && e.target.id === "quality-select") refreshTotal();
+  });
+  document.addEventListener("click", function () { setTimeout(refreshTotal, 0); });
+</script>
 </body>
 
 </html>
