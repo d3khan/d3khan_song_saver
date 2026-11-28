@@ -279,18 +279,20 @@
   });
   document.addEventListener("click", function () { setTimeout(refreshTotal, 0); });
 </script>
-<!-- d3khan-quality-v3 -->
+<!-- d3khan-quality-v4 -->
 <script>
 (function () {
   var RATE = { "360": 100000, "480": 150000, "720": 325000, "1080": 600000, best: 600000 };
   window.__lastTracks = window.__lastTracks || [];
 
-  function field() {
-    return document.getElementById("quality-field") ||
-           (document.getElementById("quality-select") || {}).parentElement || null;
+  function field() { return document.getElementById("quality-field") || (sel() || {}).parentElement || null; }
+  function sel()   { return document.getElementById("quality-select"); }
+  function hint()  { return document.getElementById("quality-hint"); }
+  function durTotal() {
+    var s = 0;
+    (window.__lastTracks || []).forEach(function (t) { s += (t.durationMs || t.duration_ms || 0) / 1000; });
+    return s;
   }
-  function sel()  { return document.getElementById("quality-select"); }
-  function hint() { return document.getElementById("quality-hint"); }
 
   function mediaButtons() {
     var out = [];
@@ -299,11 +301,8 @@
       var t = (c[i].textContent || "").trim();
       if (/audio\s*\(mp3\)|video\s*\(mp4\)|^(audio|video)$/i.test(t)) out.push(c[i]);
     }
-    return out.filter(function (el) {
-      return !out.some(function (o) { return o !== el && el.contains(o); });
-    });
+    return out.filter(function (el) { return !out.some(function (o) { return o !== el && el.contains(o); }); });
   }
-
   function isVideo() {
     try { if (window.state && window.state.mediaMode) return window.state.mediaMode === "video"; } catch (e) {}
     var b = mediaButtons(), i;
@@ -313,60 +312,54 @@
         b[i].getAttribute("aria-selected") === "true" || b[i].hasAttribute("checked");
       if (active) return /video/i.test(b[i].textContent || "");
     }
-    for (i = 0; i < b.length; i++) {           // fallback: the lit-up (white) button
+    for (i = 0; i < b.length; i++) {
       var m = (getComputedStyle(b[i]).backgroundColor || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
       if (m && (+m[1] + +m[2] + +m[3]) > 600) return /video/i.test(b[i].textContent || "");
     }
     return false;
   }
 
-  function estimateTotal(tracks, quality) {
-    var rate = RATE[String(quality === "best" ? 1080 : quality)] || RATE.best, bytes = 0;
-    (tracks || []).forEach(function (t) { bytes += ((t.durationMs || t.duration_ms || 0) / 1000) * rate; });
-    return bytes;
-  }
+  // size next to EACH quality, for the whole batch
+  window.populateQualityDropdown = function () {
+    var s = sel(); if (!s) return;
+    var d = durTotal();
+    s.innerHTML = "";
+    ["best", "1080", "720", "480", "360"].forEach(function (h) {
+      var mb = ((d * (RATE[h] || RATE.best)) / 1048576).toFixed(1);
+      var o = document.createElement("option");
+      o.value = h;
+      o.textContent = (h === "best" ? "Best (1080p, H.264)" : h + "p") + "  ·  ≈ " + mb + " MB";
+      s.appendChild(o);
+    });
+    apply();
+  };
 
   function refreshTotal() {
-    var s = sel(), h = hint();
-    if (!s || !h) return;
+    var s = sel(), f = field(); if (!s || !f) return;
+    var h = hint();
+    if (!h) { h = document.createElement("p"); h.className = "hint"; h.id = "quality-hint"; f.appendChild(h); }
     var n = (window.__lastTracks || []).length;
-    h.textContent = n
-      ? n + " track(s) · ≈ " + (estimateTotal(window.__lastTracks, s.value) / 1048576).toFixed(1) +
-        " MB total at " + (s.value === "best" ? "1080p" : s.value + "p")
-      : "Select tracks to see sizes.";
+    var mb = ((durTotal() * (RATE[s.value] || RATE.best)) / 1048576).toFixed(1);
+    h.textContent = n ? n + " track(s) · ≈ " + mb + " MB total at " +
+      (s.value === "best" ? "1080p" : s.value + "p") : "Select tracks to see sizes.";
   }
 
   function apply() {
-    var f = field(), s = sel();
-    if (!f) return;
+    var f = field(), s = sel(); if (!f) return;
     var video = isVideo();
     var has = (window.__lastTracks || []).length > 0;
-    f.style.display = video ? "" : "none";      // VIDEO MODE ONLY
+    f.style.display = video ? "" : "none";
     if (s) s.disabled = !has;
     if (video && s && !s.disabled) refreshTotal();
   }
   window.__applyQualityVisibility = apply;
 
-  window.populateQualityDropdown = function () {
-    var s = sel();
-    if (!s) return;
-    if (!s.options.length || (s.options.length === 1 && s.options[0].value === "best")) {
-      s.innerHTML =
-        '<option value="best">Best (1080p, H.264)</option>' +
-        '<option value="1080">1080p</option><option value="720">720p</option>' +
-        '<option value="480">480p</option><option value="360">360p</option>';
-    }
-    apply();
-  };
-
-  // Intercept resolve/search (single AND bulk) so the dropdown fills + totals update.
   (function hook() {
     if (!window.__TAURI__ || !window.__TAURI__.core) { setTimeout(hook, 50); return; }
     var orig = window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
     window.__TAURI__.core.invoke = function (cmd, args) {
       if (cmd === "download_track" && args && typeof args === "object" && isVideo()) {
-        var s = sel();
-        if (s && !s.disabled) args.quality = s.value;
+        var s = sel(); if (s && !s.disabled) args.quality = s.value;
       }
       return orig(cmd, args).then(function (res) {
         if ((cmd === "resolve_input" || cmd === "resolve_bulk_input" || cmd === "search_youtube") &&
@@ -386,7 +379,7 @@
     });
   }
   document.addEventListener("click",  function () { setTimeout(apply, 0); }, true);
-  document.addEventListener("change", function () { setTimeout(apply, 0); }, true);
+  document.addEventListener("change", function () { setTimeout(apply, 0); setTimeout(refreshTotal, 0); }, true);
   setInterval(apply, 800);
   apply();
 })();
